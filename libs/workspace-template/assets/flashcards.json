@@ -1,0 +1,422 @@
+{
+  "database_id": "8b77a811-3dc6-4eec-82fc-9160dd221001",
+  "inline_view_id": "e8cb18ce-6a89-4e90-b92b-4208149ce001",
+  "views": [
+    {
+      "id": "e8cb18ce-6a89-4e90-b92b-4208149ce001",
+      "database_id": "8b77a811-3dc6-4eec-82fc-9160dd221001",
+      "name": "Global flashcards",
+      "layout": 0,
+      "layout_settings": {},
+      "filters": [],
+      "group_settings": [],
+      "sorts": [],
+      "row_orders": [
+        {
+          "id": "10000000-0000-4000-8000-000000000001",
+          "height": 60
+        },
+        {
+          "id": "10000000-0000-4000-8000-000000000002",
+          "height": 60
+        },
+        {
+          "id": "10000000-0000-4000-8000-000000000003",
+          "height": 60
+        }
+      ],
+      "field_orders": [
+        {
+          "id": "front"
+        },
+        {
+          "id": "back"
+        },
+        {
+          "id": "card_mode"
+        },
+        {
+          "id": "choices"
+        },
+        {
+          "id": "correct_answer"
+        },
+        {
+          "id": "difficulty"
+        },
+        {
+          "id": "last_reviewed"
+        },
+        {
+          "id": "next_review"
+        },
+        {
+          "id": "source_note"
+        },
+        {
+          "id": "review_action"
+        }
+      ],
+      "field_settings": {
+        "front": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "back": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "card_mode": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "choices": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "correct_answer": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "difficulty": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "last_reviewed": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "next_review": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "source_note": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        },
+        "review_action": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 220
+        }
+      },
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    }
+  ],
+  "fields": [
+    {
+      "id": "front",
+      "name": "Front",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": true
+    },
+    {
+      "id": "back",
+      "name": "Back",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "card_mode",
+      "name": "Card mode",
+      "field_type": 3,
+      "type_options": {
+        "3": {
+          "content": "{\"options\":[{\"id\":\"classic\",\"name\":\"Classic flashcard\",\"color\":\"Purple\"},{\"id\":\"correct_wrong\",\"name\":\"Correct / Wrong\",\"color\":\"Blue\"},{\"id\":\"multiple_choice\",\"name\":\"Multiple choice A-E\",\"color\":\"Orange\"}],\"disable_color\":false}"
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "choices",
+      "name": "Choices A-E",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "correct_answer",
+      "name": "Correct answer",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "difficulty",
+      "name": "Difficulty",
+      "field_type": 3,
+      "type_options": {
+        "3": {
+          "content": "{\"options\":[{\"id\":\"very_easy\",\"name\":\"Very easy\",\"color\":\"Lime\"},{\"id\":\"easy\",\"name\":\"Easy\",\"color\":\"Green\"},{\"id\":\"medium\",\"name\":\"Medium\",\"color\":\"Yellow\"},{\"id\":\"hard\",\"name\":\"Hard\",\"color\":\"Orange\"},{\"id\":\"very_hard\",\"name\":\"Very hard\",\"color\":\"Red\"}],\"disable_color\":false}"
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "last_reviewed",
+      "name": "Last reviewed",
+      "field_type": 2,
+      "type_options": {
+        "2": {
+          "date_format": 3,
+          "include_time": true,
+          "field_type": 2,
+          "time_format": 1
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "next_review",
+      "name": "Next review",
+      "field_type": 2,
+      "type_options": {
+        "2": {
+          "date_format": 3,
+          "include_time": true,
+          "field_type": 2,
+          "time_format": 1
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "source_note",
+      "name": "Source note",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "review_action",
+      "name": "Review action",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    }
+  ],
+  "rows": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "database_id": "8b77a811-3dc6-4eec-82fc-9160dd221001",
+      "cells": {
+        "front": {
+          "field_type": 0,
+          "data": "What is active recall?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "back": {
+          "field_type": 0,
+          "data": "Testing yourself before looking at the answer, so the brain practices retrieval.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "card_mode": {
+          "field_type": 3,
+          "data": "classic"
+        },
+        "choices": {
+          "field_type": 0,
+          "data": "",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "correct_answer": {
+          "field_type": 0,
+          "data": "",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "medium"
+        },
+        "last_reviewed": {
+          "field_type": 2,
+          "data": "1724743948"
+        },
+        "next_review": {
+          "field_type": 2,
+          "data": "1724916748"
+        },
+        "source_note": {
+          "field_type": 0,
+          "data": "Class notes / Learning methods",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "review_action": {
+          "field_type": 0,
+          "data": "If missed, open the source note and review the lesson summary.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "database_id": "8b77a811-3dc6-4eec-82fc-9160dd221001",
+      "cells": {
+        "front": {
+          "field_type": 0,
+          "data": "Which option best describes spaced repetition?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "back": {
+          "field_type": 0,
+          "data": "B",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "card_mode": {
+          "field_type": 3,
+          "data": "multiple_choice"
+        },
+        "choices": {
+          "field_type": 0,
+          "data": "A) rereading once; B) reviewing at increasing intervals; C) highlighting only; D) studying without testing; E) copying notes",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "correct_answer": {
+          "field_type": 0,
+          "data": "",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "easy"
+        },
+        "last_reviewed": {
+          "field_type": 2,
+          "data": "1724830348"
+        },
+        "next_review": {
+          "field_type": 2,
+          "data": "1725435148"
+        },
+        "source_note": {
+          "field_type": 0,
+          "data": "Class notes / Learning methods",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "review_action": {
+          "field_type": 0,
+          "data": "If missed, revisit the note that generated this card.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "database_id": "8b77a811-3dc6-4eec-82fc-9160dd221001",
+      "cells": {
+        "front": {
+          "field_type": 0,
+          "data": "Did I correctly explain the concept without looking?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "back": {
+          "field_type": 0,
+          "data": "Mark correct only if the answer was complete and confident.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "card_mode": {
+          "field_type": 3,
+          "data": "correct_wrong"
+        },
+        "choices": {
+          "field_type": 0,
+          "data": "",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "correct_answer": {
+          "field_type": 0,
+          "data": "Correct or wrong",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "hard"
+        },
+        "last_reviewed": {
+          "field_type": 2,
+          "data": "1724660000"
+        },
+        "next_review": {
+          "field_type": 2,
+          "data": "1724860000"
+        },
+        "source_note": {
+          "field_type": 0,
+          "data": "Unlinked",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "review_action": {
+          "field_type": 0,
+          "data": "Link this card to a note when you know the content source.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    }
+  ]
+}

@@ -37,11 +37,33 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn create_document_from_class_notes_json_test() {
+    let json_str = include_str!("../../assets/class_notes.json");
+    test_document_json(json_str).await;
+  }
+
+  #[tokio::test]
   async fn create_database_from_todos_json_test() {
     let json_str = include_str!("../../assets/to-dos.json");
     let template_data = test_database_json(json_str).await;
     // one database and 5 rows
     assert_eq!(template_data.len(), 6);
+  }
+
+  #[tokio::test]
+  async fn create_database_from_flashcards_json_test() {
+    let json_str = include_str!("../../assets/flashcards.json");
+    let template_data = test_database_json(json_str).await;
+    // one database and 3 flashcard rows
+    assert_eq!(template_data.len(), 4);
+  }
+
+  #[tokio::test]
+  async fn create_database_from_question_bank_json_test() {
+    let json_str = include_str!("../../assets/question_bank.json");
+    let template_data = test_database_json(json_str).await;
+    // one database and 3 practice question rows
+    assert_eq!(template_data.len(), 4);
   }
 
   async fn test_document_json(json_str: &str) {
@@ -96,8 +118,8 @@ mod tests {
       .await
       .unwrap();
 
-    // 2 spaces + 4 documents + 1 database + 5 database rows
-    assert_eq!(result.len(), 12);
+    // 2 spaces + 5 documents + 3 databases + 11 database rows
+    assert_eq!(result.len(), 21);
 
     let views = workspace_view_builder.build();
 
@@ -108,17 +130,30 @@ mod tests {
     let shared_space = &views[1];
 
     // General
-    assert_eq!(general_space.parent_view.name, "General");
-    // generate space contains 1 document and 1 database at the first level
-    assert_eq!(general_space.child_views.len(), 2);
-    // the first document contains 2 children
+    assert_eq!(general_space.parent_view.name, "Study");
+    // study space contains dashboard, planning, flashcards, questions, and notes
+    assert_eq!(general_space.child_views.len(), 5);
+    // the first document contains 3 guide children
     assert_eq!(general_space.child_views[0].child_views.len(), 3);
-    // the first database contains 0 children
+    // the study databases and notes page contain 0 children
     assert_eq!(general_space.child_views[1].child_views.len(), 0);
+    assert_eq!(general_space.child_views[1].parent_view.name, "Study plan");
+    assert_eq!(general_space.child_views[2].child_views.len(), 0);
+    assert_eq!(general_space.child_views[3].child_views.len(), 0);
+    assert_eq!(general_space.child_views[4].child_views.len(), 0);
+    assert_eq!(
+      general_space.child_views[2].parent_view.name,
+      "Global flashcards"
+    );
+    assert_eq!(
+      general_space.child_views[3].parent_view.name,
+      "Question bank"
+    );
+    assert_eq!(general_space.child_views[4].parent_view.name, "Class notes");
 
-    // Shared
-    assert_eq!(shared_space.parent_view.name, "Shared");
-    // shared space is empty by default
+    // Resources
+    assert_eq!(shared_space.parent_view.name, "Resources");
+    // resources space is empty by default
     assert!(shared_space.child_views.is_empty());
   }
 

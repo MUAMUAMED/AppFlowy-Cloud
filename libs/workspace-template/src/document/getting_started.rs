@@ -47,6 +47,9 @@ impl GettingStartedTemplate {
     mobile_guide_view_uuid: String,
     web_guide_view_uuid: String,
     todos_view_uuid: String,
+    flashcards_view_uuid: String,
+    question_bank_view_uuid: String,
+    class_notes_view_uuid: String,
   ) -> anyhow::Result<(
     TemplateData,
     TemplateData,
@@ -55,6 +58,9 @@ impl GettingStartedTemplate {
     TemplateData,
     TemplateData,
     Vec<TemplateData>,
+    Vec<TemplateData>,
+    Vec<TemplateData>,
+    TemplateData,
   )> {
     let default_space_json = include_str!("../../assets/default_space.json");
     let general_data =
@@ -76,6 +82,12 @@ impl GettingStartedTemplate {
     );
     replacements.insert("web_guide_id".to_string(), web_guide_view_uuid.clone());
     replacements.insert("todos_id".to_string(), todos_view_uuid.clone());
+    replacements.insert("flashcards_id".to_string(), flashcards_view_uuid.clone());
+    replacements.insert(
+      "question_bank_id".to_string(),
+      question_bank_view_uuid.clone(),
+    );
+    replacements.insert("class_notes_id".to_string(), class_notes_view_uuid.clone());
     replace_json_placeholders(&mut getting_started_json, &replacements);
     let getting_started_data = create_document_from_json(
       getting_started_view_uuid.clone(),
@@ -103,6 +115,38 @@ impl GettingStartedTemplate {
     let todos_data =
       create_database_from_params(todos_view_uuid.clone(), create_database_params.clone()).await?;
 
+    let flashcards_json = include_str!("../../assets/flashcards.json");
+    let flashcards_database_data = serde_json::from_str::<DatabaseData>(flashcards_json)?;
+    let flashcards_database_view_id = flashcards_database_data.views[0].id.clone();
+    let flashcards_create_database_params = CreateDatabaseParams::from_database_data(
+      flashcards_database_data,
+      &flashcards_database_view_id,
+      &flashcards_view_uuid,
+    );
+    let flashcards_data = create_database_from_params(
+      flashcards_view_uuid.clone(),
+      flashcards_create_database_params,
+    )
+    .await?;
+
+    let question_bank_json = include_str!("../../assets/question_bank.json");
+    let question_bank_database_data = serde_json::from_str::<DatabaseData>(question_bank_json)?;
+    let question_bank_database_view_id = question_bank_database_data.views[0].id.clone();
+    let question_bank_create_database_params = CreateDatabaseParams::from_database_data(
+      question_bank_database_data,
+      &question_bank_database_view_id,
+      &question_bank_view_uuid,
+    );
+    let question_bank_data = create_database_from_params(
+      question_bank_view_uuid.clone(),
+      question_bank_create_database_params,
+    )
+    .await?;
+
+    let class_notes_json = include_str!("../../assets/class_notes.json");
+    let class_notes_data =
+      create_document_from_json(class_notes_view_uuid.clone(), class_notes_json).await?;
+
     Ok((
       general_data,
       shared_data,
@@ -111,6 +155,9 @@ impl GettingStartedTemplate {
       mobile_guide_data,
       web_guide_data,
       todos_data,
+      flashcards_data,
+      question_bank_data,
+      class_notes_data,
     ))
   }
 
@@ -195,6 +242,9 @@ impl WorkspaceTemplate for GettingStartedTemplate {
     let mobile_guide_view_uuid = gen_view_id().to_string();
     let web_guide_view_uuid = gen_view_id().to_string();
     let todos_view_uuid = gen_view_id().to_string();
+    let flashcards_view_uuid = gen_view_id().to_string();
+    let question_bank_view_uuid = gen_view_id().to_string();
+    let class_notes_view_uuid = gen_view_id().to_string();
 
     let (
       general_data,
@@ -204,6 +254,9 @@ impl WorkspaceTemplate for GettingStartedTemplate {
       mobile_guide_data,
       web_guide_data,
       todos_data,
+      flashcards_data,
+      question_bank_data,
+      class_notes_data,
     ) = self
       .create_document_and_database_data(
         general_view_uuid.clone(),
@@ -213,18 +266,21 @@ impl WorkspaceTemplate for GettingStartedTemplate {
         mobile_guide_view_uuid.clone(),
         web_guide_view_uuid.clone(),
         todos_view_uuid.clone(),
+        flashcards_view_uuid.clone(),
+        question_bank_view_uuid.clone(),
+        class_notes_view_uuid.clone(),
       )
       .await?;
 
-    // Create general space with 2 built-in views: Getting started, To-dos
-    //    The Getting started view is a document view, and the To-dos view is a board view
-    //    The Getting started view contains 2 sub views: Desktop guide, Mobile guide
+    // Create a study-focused space with built-in views for notes, flashcards, questions, and planning.
+    //    Getting started and Class notes are document views, Study plan is a board view,
+    //    and Global flashcards / Question bank are grid views.
     workspace_view_builder
       .with_view_builder(|view_builder| async {
         let created_at = timestamp();
         let mut view_builder = view_builder
           .with_view_id(general_view_uuid.clone())
-          .with_name("General")
+          .with_name("Study")
           .with_extra(&format!(
               "{{\"is_space\":true,\"space_icon\":\"interface_essential/home-3\",\"space_icon_color\":\"0xFFA34AFD\",\"space_permission\":0,\"space_created_at\":{}}}",
               created_at
@@ -246,8 +302,41 @@ impl WorkspaceTemplate for GettingStartedTemplate {
             let child_view_builder = child_view_builder
             .with_layout(ViewLayout::Board)
             .with_view_id(todos_view_uuid.clone())
-            .with_name("To-dos")
+            .with_name("Study plan")
             .with_icon("✅");
+            child_view_builder.build()
+          }
+        ).await;
+
+        view_builder = view_builder.with_child_view_builder(
+          |child_view_builder| async {
+            let child_view_builder = child_view_builder
+            .with_layout(ViewLayout::Grid)
+            .with_view_id(flashcards_view_uuid.clone())
+            .with_name("Global flashcards")
+            .with_icon("🧠");
+            child_view_builder.build()
+          }
+        ).await;
+
+        view_builder = view_builder.with_child_view_builder(
+          |child_view_builder| async {
+            let child_view_builder = child_view_builder
+            .with_layout(ViewLayout::Grid)
+            .with_view_id(question_bank_view_uuid.clone())
+            .with_name("Question bank")
+            .with_icon("❓");
+            child_view_builder.build()
+          }
+        ).await;
+
+        view_builder = view_builder.with_child_view_builder(
+          |child_view_builder| async {
+            let child_view_builder = child_view_builder
+            .with_layout(ViewLayout::Document)
+            .with_view_id(class_notes_view_uuid.clone())
+            .with_name("Class notes")
+            .with_icon("📝");
             child_view_builder.build()
           }
         ).await;
@@ -262,7 +351,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
         let created_at = timestamp();
         let view_builder = view_builder
         .with_view_id(shared_view_uuid.clone())
-        .with_name("Shared")
+        .with_name("Resources")
         .with_extra(&format!(
             "{{\"is_space\":true,\"space_icon\":\"interface_essential/star-2\",\"space_icon_color\":\"0xFFFFBA00\",\"space_permission\":0,\"space_created_at\":{}}}",
             created_at
@@ -276,11 +365,14 @@ impl WorkspaceTemplate for GettingStartedTemplate {
       general_data,
       shared_data,
       getting_started_data,
+      class_notes_data,
       desktop_guide_data,
       mobile_guide_data,
       web_guide_data,
     ];
     template_data.extend(todos_data);
+    template_data.extend(flashcards_data);
+    template_data.extend(question_bank_data);
     Ok(template_data)
   }
 }

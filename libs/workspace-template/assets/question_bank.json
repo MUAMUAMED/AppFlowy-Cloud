@@ -1,0 +1,243 @@
+{
+  "database_id": "9d3136fe-94a2-4ec5-9c2a-4dbf47771001",
+  "inline_view_id": "4f8f6f91-c1da-4110-b3df-372590371001",
+  "views": [
+    {
+      "id": "4f8f6f91-c1da-4110-b3df-372590371001",
+      "database_id": "9d3136fe-94a2-4ec5-9c2a-4dbf47771001",
+      "name": "Question bank",
+      "layout": 0,
+      "layout_settings": {},
+      "filters": [],
+      "group_settings": [],
+      "sorts": [],
+      "row_orders": [
+        {
+          "id": "20000000-0000-4000-8000-000000000001",
+          "height": 60
+        },
+        {
+          "id": "20000000-0000-4000-8000-000000000002",
+          "height": 60
+        },
+        {
+          "id": "20000000-0000-4000-8000-000000000003",
+          "height": 60
+        }
+      ],
+      "field_orders": [
+        {
+          "id": "question"
+        },
+        {
+          "id": "answer"
+        },
+        {
+          "id": "explanation"
+        },
+        {
+          "id": "difficulty"
+        },
+        {
+          "id": "status"
+        }
+      ],
+      "field_settings": {
+        "question": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 260
+        },
+        "answer": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 260
+        },
+        "explanation": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 260
+        },
+        "difficulty": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 260
+        },
+        "status": {
+          "visibility": 0,
+          "wrap": true,
+          "width": 260
+        }
+      },
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    }
+  ],
+  "fields": [
+    {
+      "id": "question",
+      "name": "Question",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": true
+    },
+    {
+      "id": "answer",
+      "name": "Correct answer",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "explanation",
+      "name": "Explanation",
+      "field_type": 0,
+      "type_options": {
+        "0": {
+          "data": ""
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "difficulty",
+      "name": "Difficulty",
+      "field_type": 3,
+      "type_options": {
+        "3": {
+          "content": "{\"options\":[{\"id\":\"easy\",\"name\":\"Easy\",\"color\":\"Green\"},{\"id\":\"medium\",\"name\":\"Medium\",\"color\":\"Orange\"},{\"id\":\"hard\",\"name\":\"Hard\",\"color\":\"Red\"}],\"disable_color\":false}"
+        }
+      },
+      "is_primary": false
+    },
+    {
+      "id": "status",
+      "name": "Practice status",
+      "field_type": 3,
+      "type_options": {
+        "3": {
+          "content": "{\"options\":[{\"id\":\"todo\",\"name\":\"To practice\",\"color\":\"Purple\"},{\"id\":\"missed\",\"name\":\"Missed\",\"color\":\"Red\"},{\"id\":\"correct\",\"name\":\"Correct\",\"color\":\"Green\"}],\"disable_color\":false}"
+        }
+      },
+      "is_primary": false
+    }
+  ],
+  "rows": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "database_id": "9d3136fe-94a2-4ec5-9c2a-4dbf47771001",
+      "cells": {
+        "question": {
+          "field_type": 0,
+          "data": "Which concept from today needs active recall first?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "answer": {
+          "field_type": 0,
+          "data": "The concept that was hardest to explain without looking at notes.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "explanation": {
+          "field_type": 0,
+          "data": "Prioritize weak topics so review time closes knowledge gaps.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "medium"
+        },
+        "status": {
+          "field_type": 3,
+          "data": "todo"
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "database_id": "9d3136fe-94a2-4ec5-9c2a-4dbf47771001",
+      "cells": {
+        "question": {
+          "field_type": 0,
+          "data": "After answering incorrectly, what should you record?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "answer": {
+          "field_type": 0,
+          "data": "The mistake and the explanation for the correct answer.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "explanation": {
+          "field_type": 0,
+          "data": "Mistake notes make future practice more targeted.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "easy"
+        },
+        "status": {
+          "field_type": 3,
+          "data": "missed"
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000003",
+      "database_id": "9d3136fe-94a2-4ec5-9c2a-4dbf47771001",
+      "cells": {
+        "question": {
+          "field_type": 0,
+          "data": "When is a question ready to become a flashcard?",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "answer": {
+          "field_type": 0,
+          "data": "When it tests one clear fact, rule, or concept.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "explanation": {
+          "field_type": 0,
+          "data": "Atomic questions are easier to review with spaced repetition.",
+          "created_at": 1724830348,
+          "last_modified": 1724830348
+        },
+        "difficulty": {
+          "field_type": 3,
+          "data": "hard"
+        },
+        "status": {
+          "field_type": 3,
+          "data": "correct"
+        }
+      },
+      "height": 60,
+      "visibility": true,
+      "created_at": 1724830348,
+      "modified_at": 1724830348
+    }
+  ]
+}

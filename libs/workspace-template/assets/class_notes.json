@@ -1,0 +1,178 @@
+{
+  "type": "page",
+  "children": [
+    {
+      "type": "heading",
+      "data": {
+        "level": 1,
+        "delta": [
+          {
+            "insert": "Class notes"
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "delta": [
+          {
+            "insert": "Use this page to keep lesson notes connected to your flashcards and question practice."
+          }
+        ]
+      }
+    },
+    {
+      "type": "heading",
+      "data": {
+        "level": 2,
+        "delta": [
+          {
+            "insert": "Lesson summary"
+          }
+        ]
+      }
+    },
+    {
+      "type": "bulleted_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Main idea:"
+          }
+        ]
+      }
+    },
+    {
+      "type": "bulleted_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Important examples:"
+          }
+        ]
+      }
+    },
+    {
+      "type": "bulleted_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "What I still need to review:"
+          }
+        ]
+      }
+    },
+    {
+      "type": "heading",
+      "data": {
+        "level": 2,
+        "delta": [
+          {
+            "insert": "Turn notes into study material"
+          }
+        ]
+      }
+    },
+    {
+      "type": "todo_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Create flashcards from the key concepts."
+          }
+        ],
+        "checked": false
+      }
+    },
+    {
+      "type": "todo_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Add practice questions for the topics that need active recall."
+          }
+        ],
+        "checked": false
+      }
+    },
+    {
+      "type": "todo_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Schedule a review session."
+          }
+        ],
+        "checked": false
+      }
+    },
+    {
+      "type": "heading",
+      "data": {
+        "level": 2,
+        "delta": [
+          {
+            "insert": "Inline flashcards for this note"
+          }
+        ]
+      }
+    },
+    {
+      "type": "paragraph",
+      "data": {
+        "delta": [
+          {
+            "insert": "Use / Flashcard inside a note to add local cards that belong only to this content. They do not have global review dates unless you promote them to Global flashcards."
+          }
+        ]
+      }
+    },
+    {
+      "type": "toggle_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Front: What is the main concept from this lesson?"
+          }
+        ],
+        "collapsed": true
+      },
+      "children": [
+        {
+          "type": "paragraph",
+          "data": {
+            "delta": [
+              {
+                "insert": "Back: Write the answer here. This local flashcard is for quick recall inside the note."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "toggle_list",
+      "data": {
+        "delta": [
+          {
+            "insert": "Question card: Did I solve the example correctly?"
+          }
+        ],
+        "collapsed": true
+      },
+      "children": [
+        {
+          "type": "paragraph",
+          "data": {
+            "delta": [
+              {
+                "insert": "Answer: Mark it correct/wrong during note review. Promote to Global flashcards if it needs scheduled repetition."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
