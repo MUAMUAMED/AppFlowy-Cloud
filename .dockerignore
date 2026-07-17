@@ -7,3 +7,4 @@ deploy/
 tests/
 docker/Dockerfile
 scripts/
+work/

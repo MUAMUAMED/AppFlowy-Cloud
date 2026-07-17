@@ -1,0 +1,2404 @@
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index a8df802..0aaa86f 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -17,7 +17,11 @@ RUN corepack enable && \
+ # Copy source code
+ COPY . .
+ 
++# Keep the Linux entrypoint executable when the source is checked out on Windows.
++RUN sed -i 's/\r$//' docker/entrypoint.sh
++
+ # Build the application
++RUN pnpm run type-check
+ RUN pnpm run build
+ 
+ # Production stage
+diff --git a/src/application/types.ts b/src/application/types.ts
+index 91145a3..7404f5a 100644
+--- a/src/application/types.ts
++++ b/src/application/types.ts
+@@ -1045,6 +1045,9 @@ export interface ViewExtra extends SpaceInfo, DatabaseViewExtra {
+ 
+   /** The view's cover image/color configuration. */
+   cover?: ViewCover;
++
++  /** Study classification used by the Review area. */
++  study_type?: 'subject' | 'content';
+ }
+ 
+ export interface View {
+@@ -1370,6 +1373,7 @@ export interface QuickNote {
+ 
+ export interface CreateWorkspacePayload {
+   workspace_name: string;
++  workspace_template?: 'study' | 'blank';
+ }
+ 
+ export interface UpdateWorkspacePayload {
+diff --git a/src/components/app/AppRouter.tsx b/src/components/app/AppRouter.tsx
+index 05c5bc5..cd267bd 100644
+--- a/src/components/app/AppRouter.tsx
++++ b/src/components/app/AppRouter.tsx
+@@ -7,6 +7,8 @@ import ApproveRequestPage from '@/components/app/landing-pages/ApproveRequestPag
+ import { AsGuest } from '@/components/app/landing-pages/AsGuest';
+ import InviteCode from '@/components/app/landing-pages/InviteCode';
+ import AppPage from '@/pages/AppPage';
++import GraphPage from '@/pages/GraphPage';
++import ReviewPage from '@/pages/ReviewPage';
+ import TrashPage from '@/pages/TrashPage';
+ 
+ function AppRouter() {
+@@ -15,6 +17,8 @@ function AppRouter() {
+       <Route element={<AuthLayout />}>
+         {/* Redirect from /app to /app/:workspaceId after OAuth login */}
+         <Route index element={<AppWorkspaceRedirect />} />
++        <Route path={':workspaceId/review'} element={<ReviewPage />} />
++        <Route path={':workspaceId/graph'} element={<GraphPage />} />
+         <Route path={':workspaceId'} element={<AppPage />} />
+         <Route path={':workspaceId/:viewId'} element={<AppPage />} />
+         <Route path={'trash'} element={<TrashPage />} />
+diff --git a/src/components/app/SideBar.tsx b/src/components/app/SideBar.tsx
+index 09c1738..ce314fb 100644
+--- a/src/components/app/SideBar.tsx
++++ b/src/components/app/SideBar.tsx
+@@ -1,17 +1,54 @@
+ import React, { lazy } from 'react';
++import { useLocation, useNavigate } from 'react-router-dom';
+ 
+-import { Role, UIVariant } from '@/application/types';
++import { Role, UIVariant, View } from '@/application/types';
+ import { OutlineDrawer } from '@/components/_shared/outline';
+-import { useUserWorkspaceInfo } from '@/components/app/app.hooks';
++import { useAppOutline, useCurrentWorkspaceId, useUserWorkspaceInfo } from '@/components/app/app.hooks';
+ import NewPage from '@/components/app/view-actions/NewPage';
+ import { Workspaces } from '@/components/app/workspaces';
++import { useService } from '@/components/main/app.hooks';
++import { syncPageTaxonomy } from '@/components/review/api';
++import { PageTaxonomySyncPayload } from '@/components/review/types';
+ 
+ import Outline from 'src/components/app/outline/Outline';
+ import { Search } from 'src/components/app/search';
+ 
+-
+ const SideBarBottom = lazy(() => import('@/components/app/SideBarBottom'));
+ 
++const subjectMarker = /#materia\b/i;
++
++function cleanPageName(name: string) {
++  return name.replace(/\s*#materia\b/gi, '').trim() || 'Sem tÃ­tulo';
++}
++
++function buildPageTaxonomy(outline: View[]): PageTaxonomySyncPayload {
++  const subjects: PageTaxonomySyncPayload['subjects'] = [];
++
++  const visit = (views: View[]) => {
++    views.forEach((view) => {
++      if (view.extra?.study_type === 'subject' || subjectMarker.test(view.name)) {
++        subjects.push({
++          view_id: view.view_id,
++          name: cleanPageName(view.name),
++          topics: view.children.map((topic) => ({
++            view_id: topic.view_id,
++            name: cleanPageName(topic.name),
++            contents: topic.children.map((content) => ({
++              view_id: content.view_id,
++              name: cleanPageName(content.name),
++            })),
++          })),
++        });
++        return;
++      }
++      visit(view.children);
++    });
++  };
++
++  visit(outline);
++  return { subjects };
++}
++
+ interface SideBarProps {
+   drawerWidth: number;
+   drawerOpened: boolean;
+@@ -27,9 +64,57 @@ function SideBar({ drawerWidth, drawerOpened, toggleOpenDrawer, onResizeDrawerWi
+   }, []);
+ 
+   const userWorkspaceInfo = useUserWorkspaceInfo();
++  const workspaceId = useCurrentWorkspaceId();
++  const outline = useAppOutline();
++  const service = useService();
++  const navigate = useNavigate();
++  const location = useLocation();
+ 
+   const role = userWorkspaceInfo?.selectedWorkspace.role;
+ 
++  React.useEffect(() => {
++    if (!workspaceId || !outline || !service || role === Role.Guest) return;
++    const legacySubjects: View[] = [];
++    const collectLegacySubjects = (views: View[]) => {
++      views.forEach((view) => {
++        if (subjectMarker.test(view.name)) legacySubjects.push(view);
++        collectLegacySubjects(view.children);
++      });
++    };
++
++    collectLegacySubjects(outline);
++    if (legacySubjects.length === 0) return;
++
++    void Promise.all(
++      legacySubjects.map((view) =>
++        service.updateAppPage(workspaceId, view.view_id, {
++          name: cleanPageName(view.name),
++          icon: view.icon || undefined,
++          extra: {
++            ...(view.extra || {}),
++            study_type: 'subject',
++          },
++        })
++      )
++    ).catch(() => {
++      // A later outline update retries the migration without interrupting editing.
++    });
++  }, [outline, role, service, workspaceId]);
++
++  React.useEffect(() => {
++    if (!workspaceId || !outline || !service || role === Role.Guest) return;
++    const client = service.getAxiosInstance();
++
++    if (!client) return;
++    const timer = window.setTimeout(() => {
++      void syncPageTaxonomy(client, workspaceId, buildPageTaxonomy(outline)).catch(() => {
++        // The next outline update retries automatically; avoid interrupting page editing.
++      });
++    }, 500);
++
++    return () => window.clearTimeout(timer);
++  }, [outline, role, service, workspaceId]);
++
+   return (
+     <OutlineDrawer
+       onResizeWidth={onResizeDrawerWidth}
+@@ -57,6 +142,31 @@ function SideBar({ drawerWidth, drawerOpened, toggleOpenDrawer, onResizeDrawerWi
+           )}
+         </div>
+ 
++        {role === Role.Guest || !workspaceId ? null : (
++          <div className='flex flex-col gap-1'>
++            <button
++              data-testid='sidebar-review-button'
++              onClick={() => navigate(`/app/${workspaceId}/review`)}
++              className={`mx-1 flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-medium transition hover:bg-fill-content-hover ${
++                location.pathname.endsWith('/review') ? 'bg-fill-content-select' : ''
++              }`}
++            >
++              <span className='text-lg'>🧠</span>
++              <span>Revisão</span>
++            </button>
++            <button
++              data-testid='sidebar-graph-button'
++              onClick={() => navigate(`/app/${workspaceId}/graph`)}
++              className={`mx-1 flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-medium transition hover:bg-fill-content-hover ${
++                location.pathname.endsWith('/graph') ? 'bg-fill-content-select' : ''
++              }`}
++            >
++              <span className='text-lg'>🕸️</span>
++              <span>Graph View</span>
++            </button>
++          </div>
++        )}
++
+         <Outline width={drawerWidth} />
+ 
+         {role === Role.Guest ? null : <SideBarBottom />}
+diff --git a/src/components/app/workspaces/EditWorkspace.tsx b/src/components/app/workspaces/EditWorkspace.tsx
+index a75f459..b7fe2e6 100644
+--- a/src/components/app/workspaces/EditWorkspace.tsx
++++ b/src/components/app/workspaces/EditWorkspace.tsx
+@@ -16,24 +16,27 @@ function EditWorkspace({
+   onOk,
+   okText,
+   title,
++  showTemplatePicker = false,
+ }: {
+   defaultName?: string;
+   open?: boolean;
+   openOnChange?: (open: boolean) => void;
+-  onOk?: (name: string) => Promise<void>;
++  onOk?: (name: string, workspaceTemplate?: 'study' | 'blank') => Promise<void>;
+   okText?: string;
+   title?: string;
++  showTemplatePicker?: boolean;
+ }) {
+   const { t } = useTranslation();
+   const [loading, setLoading] = useState(false);
+   const currentUser = useCurrentUser();
+ 
+   const [name, setName] = useState(defaultName || `${currentUser?.name}'s Workspace`);
++  const [workspaceTemplate, setWorkspaceTemplate] = useState<'study' | 'blank'>('study');
+ 
+   const handleCreate = useCallback(async () => {
+     setLoading(true);
+     try {
+-      await onOk?.(name);
++      await onOk?.(name, workspaceTemplate);
+       openOnChange?.(false);
+       // eslint-disable-next-line
+     } catch (e: any) {
+@@ -41,12 +44,13 @@ function EditWorkspace({
+     } finally {
+       setLoading(false);
+     }
+-  }, [name, openOnChange, onOk]);
++  }, [name, openOnChange, onOk, workspaceTemplate]);
+   const inputRef = useRef<HTMLInputElement | null>(null);
+ 
+   useEffect(() => {
+     if (!open) {
+       setName('');
++      setWorkspaceTemplate('study');
+     }
+   }, [open, openOnChange]);
+ 
+@@ -85,6 +89,43 @@ function EditWorkspace({
+                 }}
+               />
+             </div>
++            {showTemplatePicker && (
++              <div className='grid gap-3'>
++                <Label>Modelo do espaço de trabalho</Label>
++                <div className='grid grid-cols-2 gap-3'>
++                  <button
++                    type='button'
++                    aria-pressed={workspaceTemplate === 'study'}
++                    onClick={() => setWorkspaceTemplate('study')}
++                    className={`rounded-xl border p-4 text-left transition-colors ${
++                      workspaceTemplate === 'study'
++                        ? 'border-fill-default bg-fill-list-hover'
++                        : 'border-border-primary hover:bg-fill-list-hover'
++                    }`}
++                  >
++                    <div className='mb-2 text-2xl'>🧠</div>
++                    <div className='font-medium'>Espaço de estudo</div>
++                    <div className='mt-1 text-xs text-text-caption'>
++                      Plano, anotações, flashcards, questões e revisão.
++                    </div>
++                  </button>
++                  <button
++                    type='button'
++                    aria-pressed={workspaceTemplate === 'blank'}
++                    onClick={() => setWorkspaceTemplate('blank')}
++                    className={`rounded-xl border p-4 text-left transition-colors ${
++                      workspaceTemplate === 'blank'
++                        ? 'border-fill-default bg-fill-list-hover'
++                        : 'border-border-primary hover:bg-fill-list-hover'
++                    }`}
++                  >
++                    <div className='mb-2 text-2xl'>📄</div>
++                    <div className='font-medium'>Em branco</div>
++                    <div className='mt-1 text-xs text-text-caption'>Comece sem páginas predefinidas.</div>
++                  </button>
++                </div>
++              </div>
++            )}
+           </div>
+ 
+           <DialogFooter>
+diff --git a/src/components/app/workspaces/Workspaces.tsx b/src/components/app/workspaces/Workspaces.tsx
+index a169a0e..03d34bf 100644
+--- a/src/components/app/workspaces/Workspaces.tsx
++++ b/src/components/app/workspaces/Workspaces.tsx
+@@ -101,10 +101,11 @@ export function Workspaces() {
+ 
+   const service = useService();
+   const handleCreateWorkspace = useCallback(
+-    async (name: string) => {
++    async (name: string, workspaceTemplate: 'study' | 'blank' = 'study') => {
+       if (!service) return;
+       const workspaceId = await service.createWorkspace({
+         workspace_name: name,
++        workspace_template: workspaceTemplate,
+       });
+ 
+       await handleSelectedWorkspace?.(workspaceId);
+@@ -288,7 +289,8 @@ export function Workspaces() {
+         <EditWorkspace
+           onOk={handleCreateWorkspace}
+           okText={t('button.create')}
+-          defaultName={`${currentUser?.name}'s Workspace`}
++          defaultName='Espaço de estudo'
++          showTemplatePicker
+           open={openCreateWorkspace}
+           openOnChange={setOpenCreateWorkspace}
+         />
+diff --git a/src/components/editor/components/panels/slash-panel/SlashPanel.tsx b/src/components/editor/components/panels/slash-panel/SlashPanel.tsx
+index d7bedf0..d89384e 100644
+--- a/src/components/editor/components/panels/slash-panel/SlashPanel.tsx
++++ b/src/components/editor/components/panels/slash-panel/SlashPanel.tsx
+@@ -64,6 +64,9 @@ import { usePanelContext } from '@/components/editor/components/panels/Panels.ho
+ import { PanelType } from '@/components/editor/components/panels/PanelsContext';
+ import { getRangeRect } from '@/components/editor/components/toolbar/selection-toolbar/utils';
+ import { useEditorContext } from '@/components/editor/EditorContext';
++import FlashcardFormDialog from '@/components/review/FlashcardFormDialog';
++import FlashcardImportDialog from '@/components/review/FlashcardImportDialog';
++import { ReviewCard } from '@/components/review/types';
+ import { Button as OutlineButton } from '@/components/ui/button';
+ import { Label } from '@/components/ui/label';
+ import { Separator } from '@/components/ui/separator';
+@@ -186,6 +189,8 @@ export function SlashPanel({
+   const {
+     addPage,
+     openPageModal,
++    workspaceId,
++    requestInstance,
+     viewId: documentId,
+     loadViewMeta,
+     getMoreAIContext,
+@@ -204,6 +209,8 @@ export function SlashPanel({
+   const [databaseOptions, setDatabaseOptions] = useState<DatabaseOption[]>([]);
+   const [databaseLoading, setDatabaseLoading] = useState(false);
+   const [databaseError, setDatabaseError] = useState<string | null>(null);
++  const [flashcardDialogOpen, setFlashcardDialogOpen] = useState(false);
++  const [flashcardImportOpen, setFlashcardImportOpen] = useState(false);
+ 
+   const editor = useSlateStatic() as YjsEditor;
+ 
+@@ -328,10 +335,43 @@ export function SlashPanel({
+           openPopover(newBlockId, type, dom);
+         }, 50);
+       }
++
++      return newBlockId;
+     },
+     [editor, openPopover]
+   );
+ 
++  const insertGlobalFlashcard = useCallback(
++    (card: ReviewCard) => {
++      const flashcardBlockId = turnInto(BlockType.ToggleListBlock, {
++        collapsed: true,
++        flashcard_id: card.card_id,
++      } as ToggleListBlockData);
++
++      if (!flashcardBlockId) return;
++
++      const flashcardEntry = findSlateEntryByBlockId(editor, flashcardBlockId);
++
++      if (!flashcardEntry) return;
++
++      const [, flashcardPath] = flashcardEntry;
++      const answer = card.card_type === 'classic' ? card.back : card.explanation || card.correct_answer;
++
++      ReactEditor.focus(editor);
++      editor.select(editor.start(flashcardPath));
++      editor.insertText(`🧠 ${card.front}`);
++
++      const answerBlockId = CustomEditor.addChildBlock(editor, flashcardBlockId, BlockType.CalloutBlock, {
++        icon: '💡',
++      } as CalloutBlockData);
++
++      if (!answerBlockId) return;
++      editor.insertText(`Resposta: ${answer}`);
++      editor.flushLocalChanges();
++    },
++    [editor, turnInto]
++  );
++
+   const allowedDatabaseIds = useMemo(() => {
+     return new Set(databaseOptions.map((option) => option.view.view_id));
+   }, [databaseOptions]);
+@@ -626,6 +666,20 @@ export function SlashPanel({
+         },
+         keywords: ['text', 'paragraph'],
+       },
++      {
++        label: 'Flashcard',
++        key: 'flashcard',
++        icon: <CalloutIcon />,
++        keywords: ['flashcard', 'card', 'study', 'review', 'cartao', 'cartão', 'estudo', 'revisao', 'revisão'],
++        onClick: () => setFlashcardDialogOpen(true),
++      },
++      {
++        label: 'Importar flashcards com IA',
++        key: 'flashcards',
++        icon: <CalloutIcon />,
++        keywords: ['flashcards', 'importar', 'ia', 'lote', 'cards', 'study', 'revisao', 'revisão'],
++        onClick: () => setFlashcardImportOpen(true),
++      },
+       {
+         label: t('document.slashMenu.name.heading1'),
+         key: 'heading1',
+@@ -1287,6 +1341,29 @@ export function SlashPanel({
+ 
+   return (
+     <>
++      {requestInstance && workspaceId && (
++        <>
++          <FlashcardFormDialog
++            open={flashcardDialogOpen}
++            workspaceId={workspaceId}
++            requestInstance={requestInstance}
++            sourceViewId={documentId}
++            onClose={() => setFlashcardDialogOpen(false)}
++            onCreated={insertGlobalFlashcard}
++          />
++          <FlashcardImportDialog
++            open={flashcardImportOpen}
++            workspaceId={workspaceId}
++            requestInstance={requestInstance}
++            sourceViewId={documentId}
++            onClose={() => setFlashcardImportOpen(false)}
++            onImported={(cards, addToPage) => {
++              if (addToPage) cards.forEach(insertGlobalFlashcard);
++              notify.success(`${cards.length} flashcard${cards.length === 1 ? '' : 's'} importado${cards.length === 1 ? '' : 's'}`);
++            }}
++          />
++        </>
++      )}
+       <Popover
+         adjustOrigins={false}
+         data-testid={'slash-panel'}
+diff --git a/src/components/review/FlashcardFormDialog.tsx b/src/components/review/FlashcardFormDialog.tsx
+new file mode 100644
+index 0000000..e72241a
+--- /dev/null
++++ b/src/components/review/FlashcardFormDialog.tsx
+@@ -0,0 +1,292 @@
++import {
++  Button,
++  Dialog,
++  DialogActions,
++  DialogContent,
++  DialogTitle,
++  MenuItem,
++  TextField,
++} from '@mui/material';
++import { AxiosInstance } from 'axios';
++import React, { useEffect, useMemo, useState } from 'react';
++
++import { createCard, getTaxonomy, timezoneOffsetMinutes } from '@/components/review/api';
++import { CardType, ReviewCard, TaxonomyNode } from '@/components/review/types';
++
++interface Props {
++  open: boolean;
++  workspaceId: string;
++  requestInstance: AxiosInstance;
++  sourceViewId?: string;
++  onClose: () => void;
++  onCreated: (card: ReviewCard) => void | Promise<void>;
++}
++
++const cardTypes: Array<{ value: CardType; label: string }> = [
++  { value: 'classic', label: 'Clássico' },
++  { value: 'multiple_choice', label: 'Múltipla escolha' },
++  { value: 'true_false', label: 'Certo ou errado' },
++];
++
++export function FlashcardFormDialog({
++  open,
++  workspaceId,
++  requestInstance,
++  sourceViewId,
++  onClose,
++  onCreated,
++}: Props) {
++  const [taxonomy, setTaxonomy] = useState<TaxonomyNode[]>([]);
++  const [cardType, setCardType] = useState<CardType>('classic');
++  const [front, setFront] = useState('');
++  const [back, setBack] = useState('');
++  const [explanation, setExplanation] = useState('');
++  const [choicesText, setChoicesText] = useState('');
++  const [correctAnswer, setCorrectAnswer] = useState('');
++  const [subjectId, setSubjectId] = useState('');
++  const [topicId, setTopicId] = useState('');
++  const [contentId, setContentId] = useState('');
++  const [tags, setTags] = useState('');
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState('');
++
++  useEffect(() => {
++    if (!open) return;
++    void getTaxonomy(requestInstance, workspaceId)
++      .then(setTaxonomy)
++      .catch(() => setTaxonomy([]));
++  }, [open, requestInstance, workspaceId]);
++
++  const subjects = useMemo(() => taxonomy.filter((node) => node.kind === 'subject'), [taxonomy]);
++  const topics = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'topic' && (!subjectId || node.parent_id === subjectId)),
++    [taxonomy, subjectId]
++  );
++  const contents = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'content' && (!topicId || node.parent_id === topicId)),
++    [taxonomy, topicId]
++  );
++  const choices = useMemo(
++    () =>
++      choicesText
++        .split('\n')
++        .map((choice) => choice.trim())
++        .filter(Boolean),
++    [choicesText]
++  );
++
++  const reset = () => {
++    setCardType('classic');
++    setFront('');
++    setBack('');
++    setExplanation('');
++    setChoicesText('');
++    setCorrectAnswer('');
++    setSubjectId('');
++    setTopicId('');
++    setContentId('');
++    setTags('');
++    setError('');
++  };
++
++  const handleClose = () => {
++    if (saving) return;
++    reset();
++    onClose();
++  };
++
++  const submit = async () => {
++    setError('');
++    if (!front.trim()) {
++      setError('Escreva a frente ou o enunciado.');
++      return;
++    }
++    if (cardType === 'classic' && !back.trim()) {
++      setError('Escreva a resposta do cartão.');
++      return;
++    }
++    if (cardType === 'multiple_choice' && (choices.length < 2 || !correctAnswer)) {
++      setError('Informe pelo menos duas alternativas e escolha a resposta correta.');
++      return;
++    }
++    if (cardType === 'true_false' && !correctAnswer) {
++      setError('Escolha se a afirmação é certa ou errada.');
++      return;
++    }
++
++    setSaving(true);
++    try {
++      const card = await createCard(requestInstance, workspaceId, {
++        card_type: cardType,
++        front: front.trim(),
++        back: cardType === 'classic' ? back.trim() : correctAnswer,
++        explanation: explanation.trim(),
++        choices: cardType === 'multiple_choice' ? choices : [],
++        correct_answer: cardType === 'classic' ? '' : correctAnswer,
++        subject_id: subjectId || null,
++        topic_id: topicId || null,
++        content_id: contentId || null,
++        tags: tags
++          .split(',')
++          .map((tag) => tag.trim())
++          .filter(Boolean),
++        source_view_id: sourceViewId || null,
++        source_block_id: null,
++        timezone_offset_minutes: timezoneOffsetMinutes,
++      });
++
++      await onCreated(card);
++      reset();
++      onClose();
++    } catch (e) {
++      setError(e instanceof Error ? e.message : 'Não foi possível criar o flashcard.');
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  return (
++    <Dialog open={open} onClose={handleClose} fullWidth maxWidth='sm'>
++      <DialogTitle>Novo flashcard global</DialogTitle>
++      <DialogContent className='flex flex-col gap-4 pt-2'>
++        <TextField
++          select
++          label='Formato'
++          value={cardType}
++          onChange={(event) => {
++            setCardType(event.target.value as CardType);
++            setCorrectAnswer('');
++          }}
++        >
++          {cardTypes.map((type) => (
++            <MenuItem key={type.value} value={type.value}>
++              {type.label}
++            </MenuItem>
++          ))}
++        </TextField>
++
++        <TextField
++          autoFocus
++          multiline
++          minRows={2}
++          label={cardType === 'classic' ? 'Frente' : 'Enunciado'}
++          value={front}
++          onChange={(event) => setFront(event.target.value)}
++        />
++
++        {cardType === 'classic' && (
++          <TextField multiline minRows={3} label='Resposta' value={back} onChange={(event) => setBack(event.target.value)} />
++        )}
++
++        {cardType === 'multiple_choice' && (
++          <>
++            <TextField
++              multiline
++              minRows={4}
++              label='Alternativas — uma por linha'
++              placeholder={'Alternativa A\nAlternativa B\nAlternativa C'}
++              value={choicesText}
++              onChange={(event) => setChoicesText(event.target.value)}
++            />
++            <TextField
++              select
++              label='Resposta correta'
++              value={correctAnswer}
++              onChange={(event) => setCorrectAnswer(event.target.value)}
++            >
++              {choices.map((choice) => (
++                <MenuItem key={choice} value={choice}>
++                  {choice}
++                </MenuItem>
++              ))}
++            </TextField>
++          </>
++        )}
++
++        {cardType === 'true_false' && (
++          <TextField
++            select
++            label='Gabarito'
++            value={correctAnswer}
++            onChange={(event) => setCorrectAnswer(event.target.value)}
++          >
++            <MenuItem value='true'>Certo</MenuItem>
++            <MenuItem value='false'>Errado</MenuItem>
++          </TextField>
++        )}
++
++        {cardType !== 'classic' && (
++          <TextField
++            multiline
++            minRows={2}
++            label='Explicação'
++            value={explanation}
++            onChange={(event) => setExplanation(event.target.value)}
++          />
++        )}
++
++        <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
++          <TextField
++            select
++            label='Matéria'
++            value={subjectId}
++            onChange={(event) => {
++              setSubjectId(event.target.value);
++              setTopicId('');
++              setContentId('');
++            }}
++          >
++            <MenuItem value=''>Sem matéria</MenuItem>
++            {subjects.map((node) => (
++              <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>
++                {node.name}
++              </MenuItem>
++            ))}
++          </TextField>
++          <TextField
++            select
++            label='Tópico'
++            value={topicId}
++            disabled={!subjectId}
++            onChange={(event) => {
++              setTopicId(event.target.value);
++              setContentId('');
++            }}
++          >
++            <MenuItem value=''>Sem tópico</MenuItem>
++            {topics.map((node) => (
++              <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>
++                {node.name}
++              </MenuItem>
++            ))}
++          </TextField>
++          <TextField
++            select
++            label='Conteúdo'
++            value={contentId}
++            disabled={!topicId}
++            onChange={(event) => setContentId(event.target.value)}
++          >
++            <MenuItem value=''>Sem conteúdo</MenuItem>
++            {contents.map((node) => (
++              <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>
++                {node.name}
++              </MenuItem>
++            ))}
++          </TextField>
++        </div>
++
++        <TextField label='Tags, separadas por vírgula' value={tags} onChange={(event) => setTags(event.target.value)} />
++        {error && <div className='rounded-lg bg-red-50 p-3 text-sm text-red-700'>{error}</div>}
++      </DialogContent>
++      <DialogActions>
++        <Button onClick={handleClose} disabled={saving}>Cancelar</Button>
++        <Button variant='contained' onClick={() => void submit()} disabled={saving}>
++          {saving ? 'Salvando…' : 'Criar flashcard'}
++        </Button>
++      </DialogActions>
++    </Dialog>
++  );
++}
++
++export default FlashcardFormDialog;
+diff --git a/src/components/review/FlashcardImportDialog.tsx b/src/components/review/FlashcardImportDialog.tsx
+new file mode 100644
+index 0000000..37e6a1e
+--- /dev/null
++++ b/src/components/review/FlashcardImportDialog.tsx
+@@ -0,0 +1,223 @@
++import {
++  Button,
++  Checkbox,
++  Dialog,
++  DialogActions,
++  DialogContent,
++  DialogTitle,
++  FormControlLabel,
++  MenuItem,
++  TextField,
++} from '@mui/material';
++import { AxiosInstance } from 'axios';
++import React, { useEffect, useMemo, useState } from 'react';
++
++import { importCards, getTaxonomy, timezoneOffsetMinutes } from '@/components/review/api';
++import { FLASHCARD_AI_PROMPT, parseFlashcardImport } from '@/components/review/flashcardImport';
++import { ReviewCard, TaxonomyNode } from '@/components/review/types';
++
++interface Props {
++  open: boolean;
++  workspaceId: string;
++  requestInstance: AxiosInstance;
++  sourceViewId?: string;
++  onClose: () => void;
++  onImported: (cards: ReviewCard[], addToPage: boolean) => void | Promise<void>;
++}
++
++export function FlashcardImportDialog({
++  open,
++  workspaceId,
++  requestInstance,
++  sourceViewId,
++  onClose,
++  onImported,
++}: Props) {
++  const [input, setInput] = useState('');
++  const [taxonomy, setTaxonomy] = useState<TaxonomyNode[]>([]);
++  const [subjectId, setSubjectId] = useState('');
++  const [topicId, setTopicId] = useState('');
++  const [contentId, setContentId] = useState('');
++  const [commonTags, setCommonTags] = useState('');
++  const [addToPage, setAddToPage] = useState(Boolean(sourceViewId));
++  const [saving, setSaving] = useState(false);
++  const [error, setError] = useState('');
++
++  useEffect(() => {
++    if (!open) return;
++    setAddToPage(Boolean(sourceViewId));
++    void getTaxonomy(requestInstance, workspaceId)
++      .then((nodes) => {
++        setTaxonomy(nodes);
++        if (!sourceViewId) return;
++        const match = nodes.find((node) => node.source_view_id === sourceViewId);
++        if (!match) return;
++        if (match.kind === 'subject') setSubjectId(match.taxonomy_id);
++        if (match.kind === 'topic') {
++          setTopicId(match.taxonomy_id);
++          setSubjectId(match.parent_id || '');
++        }
++        if (match.kind === 'content') {
++          setContentId(match.taxonomy_id);
++          setTopicId(match.parent_id || '');
++          const topic = nodes.find((node) => node.taxonomy_id === match.parent_id);
++          setSubjectId(topic?.parent_id || '');
++        }
++      })
++      .catch(() => setTaxonomy([]));
++  }, [open, requestInstance, sourceViewId, workspaceId]);
++
++  const parsed = useMemo(() => {
++    if (!input.trim()) return { cards: [], error: '' };
++    try {
++      return { cards: parseFlashcardImport(input), error: '' };
++    } catch (parseError) {
++      return { cards: [], error: parseError instanceof Error ? parseError.message : 'Formato inválido.' };
++    }
++  }, [input]);
++
++  const subjects = useMemo(() => taxonomy.filter((node) => node.kind === 'subject'), [taxonomy]);
++  const topics = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'topic' && (!subjectId || node.parent_id === subjectId)),
++    [subjectId, taxonomy]
++  );
++  const contents = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'content' && (!topicId || node.parent_id === topicId)),
++    [taxonomy, topicId]
++  );
++
++  const reset = () => {
++    setInput('');
++    setSubjectId('');
++    setTopicId('');
++    setContentId('');
++    setCommonTags('');
++    setError('');
++  };
++
++  const handleClose = () => {
++    if (saving) return;
++    reset();
++    onClose();
++  };
++
++  const copyPrompt = async () => {
++    try {
++      await navigator.clipboard.writeText(FLASHCARD_AI_PROMPT);
++      setError('Instruções copiadas. Cole-as na IA que vai processar as imagens.');
++    } catch {
++      setError('Não foi possível copiar. Selecione as instruções exibidas e copie manualmente.');
++    }
++  };
++
++  const submit = async () => {
++    setError('');
++    if (parsed.error || parsed.cards.length === 0) {
++      setError(parsed.error || 'Cole pelo menos um cartão válido.');
++      return;
++    }
++    const common = commonTags.split(',').map((tag) => tag.trim()).filter(Boolean);
++    const selectedSourceViewId = sourceViewId && addToPage
++      ? sourceViewId
++      : taxonomy.find((node) => node.taxonomy_id === (contentId || topicId || subjectId))?.source_view_id || null;
++
++    setSaving(true);
++    try {
++      const cards = await importCards(
++        requestInstance,
++        workspaceId,
++        parsed.cards.map((card) => ({
++          card_type: card.type,
++          front: card.front,
++          back: card.back,
++          explanation: card.explanation,
++          choices: card.choices,
++          correct_answer: card.correct_answer,
++          subject_id: subjectId || null,
++          topic_id: topicId || null,
++          content_id: contentId || null,
++          tags: [...card.tags, ...common],
++          source_view_id: selectedSourceViewId,
++          source_block_id: null,
++          timezone_offset_minutes: timezoneOffsetMinutes,
++          initial_difficulty: card.difficulty,
++        }))
++      );
++      await onImported(cards, Boolean(sourceViewId && addToPage));
++      reset();
++      onClose();
++    } catch (importError) {
++      setError(importError instanceof Error ? importError.message : 'Não foi possível importar os cartões.');
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  return (
++    <Dialog open={open} onClose={handleClose} fullWidth maxWidth='md'>
++      <DialogTitle>Importar flashcards com IA</DialogTitle>
++      <DialogContent className='flex flex-col gap-4 pt-2'>
++        <div className='rounded-xl border border-border-primary bg-fill-content-hover p-4 text-sm'>
++          <div className='font-semibold'>1. Prepare a sua IA</div>
++          <div className='mt-1 text-text-secondary'>Copie as instruções fixas, envie para a IA junto das imagens e depois cole aqui o JSON produzido.</div>
++          <Button className='!mt-3' size='small' variant='outlined' onClick={() => void copyPrompt()}>
++            Copiar instruções para a IA
++          </Button>
++        </div>
++
++        <TextField
++          label='JSON com todos os flashcards'
++          placeholder='{"format":"studyflashcards.v1","cards":[...]}'
++          multiline
++          minRows={10}
++          maxRows={18}
++          value={input}
++          onChange={(event) => setInput(event.target.value)}
++        />
++
++        {input.trim() && (
++          <div className={`rounded-lg p-3 text-sm ${parsed.error ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-800'}`}>
++            {parsed.error || `${parsed.cards.length} ${parsed.cards.length === 1 ? 'cartão reconhecido e pronto' : 'cartões reconhecidos e prontos'} para importar.`}
++          </div>
++        )}
++
++        <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
++          <TextField select label='Matéria' value={subjectId} onChange={(event) => {
++            setSubjectId(event.target.value); setTopicId(''); setContentId('');
++          }}>
++            <MenuItem value=''>Sem matéria</MenuItem>
++            {subjects.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++          </TextField>
++          <TextField select label='Tópico' value={topicId} disabled={!subjectId} onChange={(event) => {
++            setTopicId(event.target.value); setContentId('');
++          }}>
++            <MenuItem value=''>Sem tópico</MenuItem>
++            {topics.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++          </TextField>
++          <TextField select label='Conteúdo' value={contentId} disabled={!topicId} onChange={(event) => setContentId(event.target.value)}>
++            <MenuItem value=''>Sem conteúdo</MenuItem>
++            {contents.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++          </TextField>
++        </div>
++
++        <TextField label='Tags extras para todos, separadas por vírgula' value={commonTags} onChange={(event) => setCommonTags(event.target.value)} />
++
++        {sourceViewId && (
++          <FormControlLabel
++            control={<Checkbox checked={addToPage} onChange={(event) => setAddToPage(event.target.checked)} />}
++            label='Adicionar também nesta página e vinculá-la ao botão “Rever conteúdo”'
++          />
++        )}
++        {error && <div className='rounded-lg bg-blue-50 p-3 text-sm text-blue-800'>{error}</div>}
++      </DialogContent>
++      <DialogActions>
++        <Button onClick={handleClose} disabled={saving}>Cancelar</Button>
++        <Button variant='contained' onClick={() => void submit()} disabled={saving || parsed.cards.length === 0}>
++          {saving ? 'Importando…' : `Importar ${parsed.cards.length || ''} flashcards`}
++        </Button>
++      </DialogActions>
++    </Dialog>
++  );
++}
++
++export default FlashcardImportDialog;
+diff --git a/src/components/review/api.ts b/src/components/review/api.ts
+new file mode 100644
+index 0000000..c3ea7c3
+--- /dev/null
++++ b/src/components/review/api.ts
+@@ -0,0 +1,97 @@
++import { AxiosInstance } from 'axios';
++
++import {
++  CreateCardPayload,
++  PageTaxonomySyncPayload,
++  ReviewCard,
++  ReviewDashboard,
++  ReviewResult,
++  TaxonomyNode,
++} from '@/components/review/types';
++
++interface AppResponse<T> {
++  code: number;
++  message: string;
++  data?: T;
++}
++
++function unwrap<T>(response: { data: AppResponse<T> }): T {
++  if (response.data.code !== 0 || response.data.data === undefined) {
++    throw new Error(response.data.message || 'Não foi possível concluir a operação');
++  }
++
++  return response.data.data;
++}
++
++export const timezoneOffsetMinutes = -new Date().getTimezoneOffset();
++
++export async function getDashboard(client: AxiosInstance, workspaceId: string) {
++  return unwrap<ReviewDashboard>(
++    await client.get(`/api/review/${workspaceId}/dashboard`, {
++      params: { timezone_offset_minutes: timezoneOffsetMinutes },
++    })
++  );
++}
++
++export async function getTaxonomy(client: AxiosInstance, workspaceId: string) {
++  return unwrap<TaxonomyNode[]>(await client.get(`/api/review/${workspaceId}/taxonomy`));
++}
++
++export async function createTaxonomy(
++  client: AxiosInstance,
++  workspaceId: string,
++  payload: { name: string; kind: TaxonomyNode['kind']; parent_id: string | null }
++) {
++  return unwrap<TaxonomyNode>(await client.post(`/api/review/${workspaceId}/taxonomy`, payload));
++}
++
++export async function syncPageTaxonomy(
++  client: AxiosInstance,
++  workspaceId: string,
++  payload: PageTaxonomySyncPayload
++) {
++  const response = await client.post<AppResponse<void>>(`/api/review/${workspaceId}/taxonomy/sync-pages`, payload);
++
++  if (response.data.code !== 0) {
++    throw new Error(response.data.message || 'NÃ£o foi possÃ­vel sincronizar as matÃ©rias');
++  }
++}
++
++export async function createCard(client: AxiosInstance, workspaceId: string, payload: CreateCardPayload) {
++  return unwrap<ReviewCard>(await client.post(`/api/review/${workspaceId}/cards`, payload));
++}
++
++export async function importCards(client: AxiosInstance, workspaceId: string, cards: CreateCardPayload[]) {
++  return unwrap<ReviewCard[]>(await client.post(`/api/review/${workspaceId}/cards/import`, { cards }));
++}
++
++export async function getCards(
++  client: AxiosInstance,
++  workspaceId: string,
++  filters: Partial<Record<'subject_id' | 'topic_id' | 'content_id' | 'tag' | 'card_type', string>>
++) {
++  return unwrap<ReviewCard[]>(
++    await client.get(`/api/review/${workspaceId}/cards`, {
++      params: { ...filters, timezone_offset_minutes: timezoneOffsetMinutes },
++    })
++  );
++}
++
++export async function submitReview(
++  client: AxiosInstance,
++  workspaceId: string,
++  cardId: string,
++  payload: {
++    difficulty: number;
++    selected_answer?: string;
++    correct?: boolean;
++    response_time_ms?: number;
++  }
++) {
++  return unwrap<ReviewResult>(
++    await client.post(`/api/review/${workspaceId}/cards/${cardId}/review`, {
++      ...payload,
++      timezone_offset_minutes: timezoneOffsetMinutes,
++    })
++  );
++}
+diff --git a/src/components/review/flashcardImport.ts b/src/components/review/flashcardImport.ts
+new file mode 100644
+index 0000000..ffe0630
+--- /dev/null
++++ b/src/components/review/flashcardImport.ts
+@@ -0,0 +1,179 @@
++import { CardType } from '@/components/review/types';
++
++export const FLASHCARD_IMPORT_FORMAT = 'studyflashcards.v1';
++
++export type ImportDifficulty = 'muito_facil' | 'facil' | 'medio' | 'dificil' | 'muito_dificil';
++
++export interface ParsedImportCard {
++  type: CardType;
++  front: string;
++  back: string;
++  explanation: string;
++  choices: string[];
++  correct_answer: string;
++  difficulty: number;
++  tags: string[];
++}
++
++const difficultyMap: Record<ImportDifficulty, number> = {
++  muito_facil: 1,
++  facil: 2,
++  medio: 3,
++  dificil: 4,
++  muito_dificil: 5,
++};
++
++const example = {
++  format: FLASHCARD_IMPORT_FORMAT,
++  cards: [
++    {
++      type: 'classic',
++      front: 'O que é o crédito rotativo do cartão?',
++      back: 'É o financiamento do saldo da fatura que não foi pago integralmente.',
++      explanation: 'Use uma resposta curta e autossuficiente.',
++      difficulty: 'medio',
++      tags: ['cartao-de-credito'],
++    },
++    {
++      type: 'true_false',
++      front: 'O pagamento mínimo quita integralmente a fatura do cartão.',
++      correct_answer: false,
++      explanation: 'O saldo restante entra no crédito rotativo ou em parcelamento.',
++      difficulty: 'facil',
++      tags: ['cartao-de-credito'],
++    },
++    {
++      type: 'multiple_choice',
++      front: 'Qual operação ocorre quando apenas parte da fatura é paga?',
++      choices: ['Débito automático', 'Crédito rotativo', 'Estorno', 'Saque à vista'],
++      correct_answer: 'Crédito rotativo',
++      explanation: 'O valor não pago é financiado pela instituição emissora.',
++      difficulty: 'dificil',
++      tags: ['cartao-de-credito'],
++    },
++  ],
++};
++
++export const FLASHCARD_AI_PROMPT = `Você transforma imagens, transcrições e materiais de aula em flashcards para o StudyFlash.
++
++Responda SOMENTE com JSON válido. Não escreva introdução, comentários ou texto depois do JSON.
++Use exatamente o formato "${FLASHCARD_IMPORT_FORMAT}".
++
++Regras:
++1. Crie cartões autossuficientes, claros e sem depender da imagem original.
++2. Não invente informações ausentes no material.
++3. Elimine cartões repetidos ou que testem exatamente o mesmo conhecimento.
++4. Tipos permitidos: "classic", "true_false" e "multiple_choice".
++5. Dificuldades permitidas: "muito_facil", "facil", "medio", "dificil", "muito_dificil".
++6. classic exige front e back.
++7. true_false exige correct_answer booleano (true ou false) e explanation.
++8. multiple_choice exige pelo menos 2 choices; correct_answer deve ser idêntica a uma das choices.
++9. Use tags curtas, em minúsculas e sem #.
++10. Gere no máximo 200 cartões.
++
++Exemplo de saída:
++${JSON.stringify(example, null, 2)}`;
++
++function cleanJsonInput(input: string) {
++  const trimmed = input.trim();
++  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
++  return fenced ? fenced[1] : trimmed;
++}
++
++function requiredString(value: unknown, field: string, index: number) {
++  if (typeof value !== 'string' || !value.trim()) {
++    throw new Error(`Cartão ${index + 1}: o campo ${field} é obrigatório.`);
++  }
++  return value.trim();
++}
++
++function optionalString(value: unknown) {
++  return typeof value === 'string' ? value.trim() : '';
++}
++
++export function parseFlashcardImport(input: string): ParsedImportCard[] {
++  if (!input.trim()) throw new Error('Cole o JSON gerado pela IA.');
++  let document: unknown;
++  try {
++    document = JSON.parse(cleanJsonInput(input));
++  } catch {
++    throw new Error('O texto não é um JSON válido. Peça para a IA responder somente com JSON.');
++  }
++  if (!document || typeof document !== 'object' || Array.isArray(document)) {
++    throw new Error('O documento precisa ser um objeto JSON.');
++  }
++  const root = document as Record<string, unknown>;
++  if (root.format !== FLASHCARD_IMPORT_FORMAT) {
++    throw new Error(`Formato inválido. Use exatamente "${FLASHCARD_IMPORT_FORMAT}".`);
++  }
++  if (!Array.isArray(root.cards) || root.cards.length === 0 || root.cards.length > 200) {
++    throw new Error('A importação deve conter entre 1 e 200 cartões.');
++  }
++
++  return root.cards.map((raw, index) => {
++    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
++      throw new Error(`Cartão ${index + 1}: estrutura inválida.`);
++    }
++    const card = raw as Record<string, unknown>;
++    const type = card.type as CardType;
++    if (!['classic', 'true_false', 'multiple_choice'].includes(type)) {
++      throw new Error(`Cartão ${index + 1}: tipo inválido.`);
++    }
++    const difficultyName = (card.difficulty || 'medio') as ImportDifficulty;
++    const difficulty = difficultyMap[difficultyName];
++    if (!difficulty) throw new Error(`Cartão ${index + 1}: dificuldade inválida.`);
++    const tags = Array.isArray(card.tags)
++      ? card.tags.map((tag) => optionalString(tag)).filter(Boolean)
++      : [];
++    const front = requiredString(card.front, 'front', index);
++    const explanation = optionalString(card.explanation);
++
++    if (type === 'classic') {
++      return {
++        type,
++        front,
++        back: requiredString(card.back, 'back', index),
++        explanation,
++        choices: [],
++        correct_answer: '',
++        difficulty,
++        tags,
++      };
++    }
++
++    if (type === 'true_false') {
++      if (typeof card.correct_answer !== 'boolean') {
++        throw new Error(`Cartão ${index + 1}: correct_answer deve ser true ou false.`);
++      }
++      return {
++        type,
++        front,
++        back: card.correct_answer ? 'true' : 'false',
++        explanation,
++        choices: [],
++        correct_answer: card.correct_answer ? 'true' : 'false',
++        difficulty,
++        tags,
++      };
++    }
++
++    const choices = Array.isArray(card.choices)
++      ? card.choices.map((choice) => optionalString(choice)).filter(Boolean)
++      : [];
++    const correctAnswer = requiredString(card.correct_answer, 'correct_answer', index);
++    if (choices.length < 2) throw new Error(`Cartão ${index + 1}: informe pelo menos duas alternativas.`);
++    if (!choices.includes(correctAnswer)) {
++      throw new Error(`Cartão ${index + 1}: correct_answer deve ser idêntica a uma das choices.`);
++    }
++    return {
++      type,
++      front,
++      back: correctAnswer,
++      explanation,
++      choices,
++      correct_answer: correctAnswer,
++      difficulty,
++      tags,
++    };
++  });
++}
+diff --git a/src/components/review/types.ts b/src/components/review/types.ts
+new file mode 100644
+index 0000000..ec96234
+--- /dev/null
++++ b/src/components/review/types.ts
+@@ -0,0 +1,94 @@
++export type CardType = 'classic' | 'multiple_choice' | 'true_false';
++
++export interface TaxonomyNode {
++  taxonomy_id: string;
++  parent_id: string | null;
++  kind: 'subject' | 'topic' | 'content';
++  name: string;
++  source_view_id?: string | null;
++}
++
++export interface PageTaxonomySyncPayload {
++  subjects: Array<{
++    view_id: string;
++    name: string;
++    topics: Array<{
++      view_id: string;
++      name: string;
++      contents: Array<{
++        view_id: string;
++        name: string;
++      }>;
++    }>;
++  }>;
++}
++
++export interface ReviewCard {
++  card_id: string;
++  card_type: CardType;
++  front: string;
++  back: string;
++  explanation: string;
++  choices: string[];
++  correct_answer: string;
++  subject_id: string | null;
++  topic_id: string | null;
++  content_id: string | null;
++  tags: string[];
++  source_view_id: string | null;
++  source_block_id: string | null;
++  state: string;
++  due_at: string;
++  interval_seconds: number;
++  difficulty_score: number;
++  correct_count: number;
++  incorrect_count: number;
++}
++
++export interface ReviewDashboard {
++  review_date: string;
++  goal: number;
++  completed: number;
++  remaining: number;
++  overdue: number;
++  new_cards: number;
++  learning: number;
++  reviewed_today: number;
++  xp_today: number;
++  total_xp: number;
++  level: number;
++  current_streak: number;
++  longest_streak: number;
++  completion_awarded: boolean;
++  queue: ReviewCard[];
++}
++
++export interface CreateCardPayload {
++  card_type: CardType;
++  front: string;
++  back: string;
++  explanation: string;
++  choices: string[];
++  correct_answer: string;
++  subject_id: string | null;
++  topic_id: string | null;
++  content_id: string | null;
++  tags: string[];
++  source_view_id?: string | null;
++  source_block_id?: string | null;
++  timezone_offset_minutes: number;
++  initial_difficulty?: number;
++}
++
++export interface ReviewResult {
++  correct: boolean;
++  xp_awarded: number;
++  completion_bonus: number;
++  total_xp: number;
++  due_at: string;
++  interval_seconds: number;
++  state: string;
++  daily_goal: number;
++  daily_completed: number;
++  current_streak: number;
++}
+diff --git a/src/components/view-meta/StudyTypeProperty.tsx b/src/components/view-meta/StudyTypeProperty.tsx
+new file mode 100644
+index 0000000..c41cef3
+--- /dev/null
++++ b/src/components/view-meta/StudyTypeProperty.tsx
+@@ -0,0 +1,89 @@
++import React, { useCallback, useEffect, useState } from 'react';
++
++import { UpdatePagePayload, ViewExtra, ViewIconType } from '@/application/types';
++import { notify } from '@/components/_shared/notify';
++
++type StudyType = NonNullable<ViewExtra['study_type']> | '';
++
++interface StudyTypePropertyProps {
++  extra?: ViewExtra | null;
++  icon?: { ty: number; value: string } | null;
++  maxWidth?: number;
++  name?: string;
++  readOnly?: boolean;
++  updatePage?: (viewId: string, data: UpdatePagePayload) => Promise<void>;
++  viewId?: string;
++}
++
++function StudyTypeProperty({
++  extra,
++  icon,
++  maxWidth,
++  name,
++  readOnly,
++  updatePage,
++  viewId,
++}: StudyTypePropertyProps) {
++  const [studyType, setStudyType] = useState<StudyType>(extra?.study_type || '');
++  const [saving, setSaving] = useState(false);
++
++  useEffect(() => {
++    setStudyType(extra?.study_type || '');
++  }, [extra?.study_type, viewId]);
++
++  const handleChange = useCallback(
++    async (event: React.ChangeEvent<HTMLSelectElement>) => {
++      if (!updatePage || !viewId || readOnly) return;
++      const nextStudyType = event.target.value as StudyType;
++      const previousStudyType = studyType;
++
++      setStudyType(nextStudyType);
++      setSaving(true);
++      try {
++        await updatePage(viewId, {
++          name: name || '',
++          icon: icon
++            ? {
++                ty: icon.ty as ViewIconType,
++                value: icon.value,
++              }
++            : undefined,
++          extra: {
++            ...(extra || {}),
++            study_type: nextStudyType || undefined,
++          },
++        });
++      } catch (error) {
++        setStudyType(previousStudyType);
++        notify.error(error instanceof Error ? error.message : 'Não foi possível salvar a propriedade');
++      } finally {
++        setSaving(false);
++      }
++    },
++    [extra, icon, name, readOnly, studyType, updatePage, viewId]
++  );
++
++  return (
++    <div
++      data-testid='study-type-property'
++      style={{ width: maxWidth || '100%' }}
++      className='mt-3 flex max-w-full items-center gap-4 px-24 text-sm max-sm:px-6'
++    >
++      <span className='w-36 shrink-0 text-text-secondary'>Tipo de estudo</span>
++      <select
++        aria-label='Tipo de estudo'
++        value={studyType}
++        disabled={readOnly || saving}
++        onChange={handleChange}
++        className='h-8 min-w-48 rounded-md border border-border-primary bg-transparent px-2 text-text-primary outline-none hover:bg-fill-content-hover focus:border-border-primary'
++      >
++        <option value=''>Não definido</option>
++        <option value='subject'>Matéria</option>
++        <option value='content'>Conteúdo</option>
++      </select>
++      {saving ? <span className='text-xs text-text-tertiary'>Salvando…</span> : null}
++    </div>
++  );
++}
++
++export default StudyTypeProperty;
+diff --git a/src/components/view-meta/ViewMetaPreview.tsx b/src/components/view-meta/ViewMetaPreview.tsx
+index 9226b05..f2a0fde 100644
+--- a/src/components/view-meta/ViewMetaPreview.tsx
++++ b/src/components/view-meta/ViewMetaPreview.tsx
+@@ -5,6 +5,7 @@ import { CoverType, ViewIconType, ViewLayout, ViewMetaCover, ViewMetaIcon, ViewM
+ import { CustomIconPopover } from '@/components/_shared/cutsom-icon';
+ import { notify } from '@/components/_shared/notify';
+ import PageIcon from '@/components/_shared/view-icon/PageIcon';
++import StudyTypeProperty from '@/components/view-meta/StudyTypeProperty';
+ import TitleEditable from '@/components/view-meta/TitleEditable';
+ import ViewCover from '@/components/view-meta/ViewCover';
+ import { ColorEnum } from '@/utils/color';
+@@ -212,7 +213,7 @@ export function ViewMetaPreview({
+           style={{
+             marginBottom: layout === ViewLayout.Document ? '24px' : '16px',
+           }}
+-          className={`relative flex w-full items-center justify-center overflow-visible`}
++          className={`relative flex w-full flex-col items-center justify-center overflow-visible`}
+         >
+           <h1
+             style={{
+@@ -290,6 +291,15 @@ export function ViewMetaPreview({
+               </>
+             )}
+           </h1>
++          <StudyTypeProperty
++            extra={extra}
++            icon={icon}
++            maxWidth={maxWidth}
++            name={name}
++            readOnly={readOnly}
++            updatePage={updatePage}
++            viewId={viewId}
++          />
+         </div>
+       </div>
+     </div>
+diff --git a/src/pages/GraphPage.tsx b/src/pages/GraphPage.tsx
+new file mode 100644
+index 0000000..c38a9bb
+--- /dev/null
++++ b/src/pages/GraphPage.tsx
+@@ -0,0 +1,410 @@
++import { LocateFixed, Network, Search, ZoomIn, ZoomOut } from 'lucide-react';
++import React, { PointerEvent, useMemo, useRef, useState, WheelEvent } from 'react';
++
++import { View } from '@/application/types';
++import { useAppHandlers, useAppOutline } from '@/components/app/app.hooks';
++
++type NodeKind = 'space' | 'subject' | 'topic' | 'content';
++
++interface GraphNode {
++  id: string;
++  label: string;
++  kind: NodeKind;
++  depth: number;
++  parentId?: string;
++  x: number;
++  y: number;
++  degree: number;
++}
++
++interface GraphEdge {
++  source: string;
++  target: string;
++}
++
++const nodeStyle: Record<NodeKind, { label: string; color: string; glow: string }> = {
++  space: { label: 'Espaço', color: '#8b5cf6', glow: 'rgba(139, 92, 246, 0.32)' },
++  subject: { label: 'Matéria', color: '#ec4899', glow: 'rgba(236, 72, 153, 0.34)' },
++  topic: { label: 'Tópico', color: '#06b6d4', glow: 'rgba(6, 182, 212, 0.32)' },
++  content: { label: 'Conteúdo', color: '#3b82f6', glow: 'rgba(59, 130, 246, 0.3)' },
++};
++
++function hash(value: string) {
++  let result = 2166136261;
++  for (let index = 0; index < value.length; index += 1) {
++    result ^= value.charCodeAt(index);
++    result = Math.imul(result, 16777619);
++  }
++  return Math.abs(result >>> 0);
++}
++
++function classify(view: View, parentKind?: NodeKind): NodeKind {
++  if (view.extra?.is_space) return 'space';
++  if (view.extra?.study_type === 'subject' || /#materia\b/i.test(view.name)) return 'subject';
++  if (parentKind === 'subject') return 'topic';
++  return 'content';
++}
++
++function createGraph(outline: View[]) {
++  const nodes: Omit<GraphNode, 'x' | 'y' | 'degree'>[] = [];
++  const edges: GraphEdge[] = [];
++  const visit = (views: View[], parentId?: string, depth = 0, parentKind?: NodeKind) => {
++    views.forEach((view) => {
++      const kind = classify(view, parentKind);
++      nodes.push({ id: view.view_id, label: view.name.trim() || 'Sem título', kind, depth, parentId });
++      if (parentId) edges.push({ source: parentId, target: view.view_id });
++      visit(view.children || [], view.view_id, depth + 1, kind);
++    });
++  };
++  visit(outline);
++  return { nodes, edges };
++}
++
++function forceLayout(inputNodes: Omit<GraphNode, 'x' | 'y' | 'degree'>[], edges: GraphEdge[]): GraphNode[] {
++  const centerX = 700;
++  const centerY = 420;
++  const degree = new Map<string, number>();
++  edges.forEach(({ source, target }) => {
++    degree.set(source, (degree.get(source) || 0) + 1);
++    degree.set(target, (degree.get(target) || 0) + 1);
++  });
++  const nodes = inputNodes.map((node, index) => {
++    const angle = (hash(node.id) % 6283) / 1000;
++    const radius = 80 + node.depth * 115 + (hash(`${node.id}-radius`) % 80);
++    return {
++      ...node,
++      x: centerX + Math.cos(angle) * radius + (index % 3) * 8,
++      y: centerY + Math.sin(angle) * radius + (index % 5) * 6,
++      degree: degree.get(node.id) || 0,
++      vx: 0,
++      vy: 0,
++    };
++  });
++  const byId = new Map(nodes.map((node) => [node.id, node]));
++  for (let iteration = 0; iteration < 190; iteration += 1) {
++    for (let left = 0; left < nodes.length; left += 1) {
++      for (let right = left + 1; right < nodes.length; right += 1) {
++        const a = nodes[left];
++        const b = nodes[right];
++        const dx = a.x - b.x || 0.1;
++        const dy = a.y - b.y || 0.1;
++        const distanceSquared = Math.max(140, dx * dx + dy * dy);
++        const force = 2400 / distanceSquared;
++        const distance = Math.sqrt(distanceSquared);
++        const fx = (dx / distance) * force;
++        const fy = (dy / distance) * force;
++        a.vx += fx;
++        a.vy += fy;
++        b.vx -= fx;
++        b.vy -= fy;
++      }
++    }
++    edges.forEach(({ source, target }) => {
++      const a = byId.get(source);
++      const b = byId.get(target);
++      if (!a || !b) return;
++      const dx = b.x - a.x;
++      const dy = b.y - a.y;
++      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
++      const force = (distance - (a.kind === 'space' ? 165 : 125)) * 0.012;
++      const fx = (dx / distance) * force;
++      const fy = (dy / distance) * force;
++      a.vx += fx;
++      a.vy += fy;
++      b.vx -= fx;
++      b.vy -= fy;
++    });
++    nodes.forEach((node) => {
++      node.vx = (node.vx + (centerX - node.x) * 0.0008) * 0.84;
++      node.vy = (node.vy + (centerY - node.y) * 0.0008) * 0.84;
++      node.x += node.vx;
++      node.y += node.vy;
++    });
++  }
++  return nodes.map(({ vx: _vx, vy: _vy, ...node }) => node);
++}
++
++function GraphPage() {
++  const outline = useAppOutline() || [];
++  const { openPageModal } = useAppHandlers();
++  const [search, setSearch] = useState('');
++  const [enabledKinds, setEnabledKinds] = useState<Record<NodeKind, boolean>>({
++    space: true,
++    subject: true,
++    topic: true,
++    content: true,
++  });
++  const [zoom, setZoom] = useState(0.62);
++  const [pan, setPan] = useState({ x: 0, y: 0 });
++  const [overrides, setOverrides] = useState<Record<string, { x: number; y: number }>>({});
++  const [hoveredId, setHoveredId] = useState<string>();
++  const svgRef = useRef<SVGSVGElement>(null);
++  const dragRef = useRef<{ id?: string; pointerId: number; moved: boolean }>();
++  const panRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number }>();
++
++  const graph = useMemo(() => createGraph(outline), [outline]);
++  const layoutNodes = useMemo(() => forceLayout(graph.nodes, graph.edges), [graph]);
++  const positionedNodes = useMemo(
++    () => layoutNodes.map((node) => ({ ...node, ...(overrides[node.id] || {}) })),
++    [layoutNodes, overrides]
++  );
++  const visibleIds = useMemo(() => {
++    const allowed = new Set(positionedNodes.filter((node) => enabledKinds[node.kind]).map((node) => node.id));
++    const term = search.trim().toLocaleLowerCase();
++    if (!term) return allowed;
++    const matches = positionedNodes.filter(
++      (node) => allowed.has(node.id) && node.label.toLocaleLowerCase().includes(term)
++    );
++    const result = new Set(matches.map((node) => node.id));
++    matches.forEach((match) => {
++      let parentId = match.parentId;
++      while (parentId) {
++        result.add(parentId);
++        parentId = positionedNodes.find((node) => node.id === parentId)?.parentId;
++      }
++      graph.edges.forEach((edge) => {
++        if (edge.source === match.id) result.add(edge.target);
++      });
++    });
++    return result;
++  }, [enabledKinds, graph.edges, positionedNodes, search]);
++  const visibleNodes = positionedNodes.filter((node) => visibleIds.has(node.id));
++  const visibleEdges = graph.edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
++  const nodeById = new Map(positionedNodes.map((node) => [node.id, node]));
++
++  const toGraphPoint = (event: PointerEvent<SVGElement>) => {
++    const rect = svgRef.current?.getBoundingClientRect();
++    return {
++      x: (event.clientX - (rect?.left || 0) - pan.x) / zoom,
++      y: (event.clientY - (rect?.top || 0) - pan.y) / zoom,
++    };
++  };
++  const handleNodePointerDown = (event: PointerEvent<SVGGElement>, id: string) => {
++    event.stopPropagation();
++    dragRef.current = { id, pointerId: event.pointerId, moved: false };
++    event.currentTarget.setPointerCapture(event.pointerId);
++  };
++  const handleNodePointerMove = (event: PointerEvent<SVGGElement>, id: string) => {
++    if (dragRef.current?.id !== id || dragRef.current.pointerId !== event.pointerId) return;
++    dragRef.current.moved = true;
++    setOverrides((current) => ({ ...current, [id]: toGraphPoint(event) }));
++  };
++  const handleNodePointerUp = (event: PointerEvent<SVGGElement>, id: string) => {
++    if (dragRef.current?.id !== id) return;
++    const shouldOpen = !dragRef.current.moved;
++    dragRef.current = undefined;
++    if (shouldOpen) openPageModal?.(id);
++    event.currentTarget.releasePointerCapture(event.pointerId);
++  };
++  const handlePanStart = (event: PointerEvent<SVGSVGElement>) => {
++    if (event.target !== event.currentTarget) return;
++    panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, originX: pan.x, originY: pan.y };
++    event.currentTarget.setPointerCapture(event.pointerId);
++  };
++  const handlePanMove = (event: PointerEvent<SVGSVGElement>) => {
++    const active = panRef.current;
++    if (!active || active.pointerId !== event.pointerId) return;
++    setPan({ x: active.originX + event.clientX - active.x, y: active.originY + event.clientY - active.y });
++  };
++  const handlePanEnd = (event: PointerEvent<SVGSVGElement>) => {
++    if (panRef.current?.pointerId !== event.pointerId) return;
++    panRef.current = undefined;
++    event.currentTarget.releasePointerCapture(event.pointerId);
++  };
++  const handleWheel = (event: WheelEvent<SVGSVGElement>) => {
++    const nextZoom = Math.min(2.4, Math.max(0.3, zoom * (event.deltaY > 0 ? 0.9 : 1.1)));
++    const rect = svgRef.current?.getBoundingClientRect();
++    const mouseX = event.clientX - (rect?.left || 0);
++    const mouseY = event.clientY - (rect?.top || 0);
++    const graphX = (mouseX - pan.x) / zoom;
++    const graphY = (mouseY - pan.y) / zoom;
++    setPan({ x: mouseX - graphX * nextZoom, y: mouseY - graphY * nextZoom });
++    setZoom(nextZoom);
++  };
++  const resetViewport = () => {
++    setZoom(0.62);
++    setPan({ x: 0, y: 0 });
++    setOverrides({});
++  };
++
++  return (
++    <div className='flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-primary'>
++      <header className='flex flex-wrap items-center justify-between gap-4 border-b border-border-primary px-7 py-5'>
++        <div className='flex items-center gap-3'>
++          <div className='flex h-11 w-11 items-center justify-center rounded-2xl bg-purple-500/10 text-purple-500'>
++            <Network size={24} />
++          </div>
++          <div>
++            <div className='text-xs font-semibold uppercase tracking-[0.2em] text-purple-500'>Mapa do conhecimento</div>
++            <h1 className='text-2xl font-semibold text-text-primary'>Graph View</h1>
++          </div>
++        </div>
++        <div className='flex items-center gap-2 rounded-xl border border-border-primary bg-surface-container-layer-01 px-3 py-2'>
++          <Search size={17} className='text-text-tertiary' />
++          <input
++            value={search}
++            onChange={(event) => setSearch(event.target.value)}
++            placeholder='Buscar página...'
++            aria-label='Buscar página no gráfico'
++            className='w-56 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary'
++          />
++        </div>
++      </header>
++      <div className='relative flex min-h-0 flex-1'>
++        <aside className='z-10 w-60 shrink-0 border-r border-border-primary bg-surface-container-layer-01 p-5'>
++          <div className='text-xs font-semibold uppercase tracking-wider text-text-tertiary'>Exibir</div>
++          <div className='mt-4 space-y-3'>
++            {(Object.keys(nodeStyle) as NodeKind[]).map((kind) => (
++              <label
++                key={kind}
++                className='flex cursor-pointer items-center justify-between gap-3 text-sm text-text-secondary'
++              >
++                <span className='flex items-center gap-2'>
++                  <span className='h-3 w-3 rounded-full' style={{ backgroundColor: nodeStyle[kind].color }} />
++                  {nodeStyle[kind].label}
++                </span>
++                <input
++                  type='checkbox'
++                  checked={enabledKinds[kind]}
++                  onChange={(event) => setEnabledKinds((current) => ({ ...current, [kind]: event.target.checked }))}
++                  className='h-4 w-4 accent-purple-500'
++                />
++              </label>
++            ))}
++          </div>
++          <div className='mt-7 border-t border-border-primary pt-5'>
++            <div className='text-xs font-semibold uppercase tracking-wider text-text-tertiary'>Resumo</div>
++            <div className='mt-3 grid grid-cols-2 gap-2'>
++              <div className='rounded-xl bg-surface-container-layer-02 p-3'>
++                <div className='text-xl font-semibold text-text-primary'>{visibleNodes.length}</div>
++                <div className='text-xs text-text-tertiary'>páginas</div>
++              </div>
++              <div className='rounded-xl bg-surface-container-layer-02 p-3'>
++                <div className='text-xl font-semibold text-text-primary'>{visibleEdges.length}</div>
++                <div className='text-xs text-text-tertiary'>conexões</div>
++              </div>
++            </div>
++          </div>
++          <p className='mt-6 text-xs leading-5 text-text-tertiary'>
++            Clique para abrir uma página. Arraste os nós para reorganizar e use a roda do mouse para ampliar.
++          </p>
++        </aside>
++        <div className='relative min-w-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_center,var(--fill-content-hover)_1px,transparent_1px)] [background-size:22px_22px]'>
++          {visibleNodes.length === 0 ? (
++            <div className='absolute inset-0 flex flex-col items-center justify-center text-center'>
++              <Network size={48} className='mb-4 text-text-tertiary' />
++              <div className='text-lg font-medium text-text-primary'>Nenhuma página encontrada</div>
++              <div className='mt-1 text-sm text-text-tertiary'>Altere a busca ou os filtros do gráfico.</div>
++            </div>
++          ) : null}
++          <svg
++            ref={svgRef}
++            className='h-full w-full cursor-grab touch-none active:cursor-grabbing'
++            onPointerDown={handlePanStart}
++            onPointerMove={handlePanMove}
++            onPointerUp={handlePanEnd}
++            onPointerCancel={handlePanEnd}
++            onWheel={handleWheel}
++          >
++            <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
++              {visibleEdges.map((edge) => {
++                const source = nodeById.get(edge.source);
++                const target = nodeById.get(edge.target);
++                if (!source || !target) return null;
++                const highlighted = hoveredId === edge.source || hoveredId === edge.target;
++                return (
++                  <line
++                    key={`${edge.source}-${edge.target}`}
++                    x1={source.x}
++                    y1={source.y}
++                    x2={target.x}
++                    y2={target.y}
++                    stroke={highlighted ? nodeStyle[target.kind].color : 'var(--border-primary)'}
++                    strokeWidth={highlighted ? 2.2 : 1.15}
++                    strokeOpacity={highlighted ? 0.9 : 0.62}
++                  />
++                );
++              })}
++              {visibleNodes.map((node) => {
++                const radius = Math.min(17, 8 + node.degree * 1.4 + (node.kind === 'subject' ? 3 : 0));
++                const active = hoveredId === node.id;
++                return (
++                  <g
++                    key={node.id}
++                    role='button'
++                    tabIndex={0}
++                    aria-label={`Abrir ${node.label}`}
++                    transform={`translate(${node.x} ${node.y})`}
++                    className='cursor-pointer outline-none'
++                    onPointerDown={(event) => handleNodePointerDown(event, node.id)}
++                    onPointerMove={(event) => handleNodePointerMove(event, node.id)}
++                    onPointerUp={(event) => handleNodePointerUp(event, node.id)}
++                    onPointerCancel={() => {
++                      dragRef.current = undefined;
++                    }}
++                    onMouseEnter={() => setHoveredId(node.id)}
++                    onMouseLeave={() => setHoveredId(undefined)}
++                    onKeyDown={(event) => {
++                      if (event.key === 'Enter' || event.key === ' ') openPageModal?.(node.id);
++                    }}
++                  >
++                    <circle
++                      r={radius + (active ? 7 : 4)}
++                      fill={nodeStyle[node.kind].glow}
++                      opacity={active ? 0.9 : 0.5}
++                    />
++                    <circle
++                      r={radius}
++                      fill={nodeStyle[node.kind].color}
++                      stroke='var(--surface-primary)'
++                      strokeWidth={3}
++                    />
++                    <text
++                      y={radius + 17}
++                      textAnchor='middle'
++                      className='select-none fill-text-primary text-[12px] font-medium'
++                      style={{
++                        paintOrder: 'stroke',
++                        stroke: 'var(--surface-primary)',
++                        strokeWidth: 4,
++                        strokeLinejoin: 'round',
++                      }}
++                    >
++                      {node.label.length > 27 ? `${node.label.slice(0, 25)}…` : node.label}
++                    </text>
++                  </g>
++                );
++              })}
++            </g>
++          </svg>
++          <div className='absolute bottom-5 right-5 flex items-center gap-1 rounded-xl border border-border-primary bg-surface-container-layer-01 p-1 shadow-lg'>
++            <button
++              aria-label='Diminuir zoom'
++              onClick={() => setZoom((current) => Math.max(0.3, current - 0.15))}
++              className='rounded-lg p-2 text-text-secondary hover:bg-fill-content-hover'
++            >
++              <ZoomOut size={18} />
++            </button>
++            <span className='w-12 text-center text-xs text-text-tertiary'>{Math.round(zoom * 100)}%</span>
++            <button
++              aria-label='Aumentar zoom'
++              onClick={() => setZoom((current) => Math.min(2.4, current + 0.15))}
++              className='rounded-lg p-2 text-text-secondary hover:bg-fill-content-hover'
++            >
++              <ZoomIn size={18} />
++            </button>
++            <button
++              aria-label='Centralizar gráfico'
++              onClick={resetViewport}
++              className='rounded-lg p-2 text-text-secondary hover:bg-fill-content-hover'
++            >
++              <LocateFixed size={18} />
++            </button>
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++}
++
++export default GraphPage;
+diff --git a/src/pages/ReviewPage.tsx b/src/pages/ReviewPage.tsx
+new file mode 100644
+index 0000000..5ecd9de
+--- /dev/null
++++ b/src/pages/ReviewPage.tsx
+@@ -0,0 +1,476 @@
++import { Button, LinearProgress, MenuItem, TextField } from '@mui/material';
++import { AxiosInstance } from 'axios';
++import React, { useCallback, useEffect, useMemo, useState } from 'react';
++import { useParams } from 'react-router-dom';
++import { toast } from 'sonner';
++
++import { useAppHandlers } from '@/components/app/app.hooks';
++import { useService } from '@/components/main/app.hooks';
++import {
++  createTaxonomy,
++  getCards,
++  getDashboard,
++  getTaxonomy,
++  submitReview,
++} from '@/components/review/api';
++import FlashcardFormDialog from '@/components/review/FlashcardFormDialog';
++import FlashcardImportDialog from '@/components/review/FlashcardImportDialog';
++import { ReviewCard, ReviewDashboard, TaxonomyNode } from '@/components/review/types';
++
++const difficulties = [
++  { value: 1, label: 'Muito fácil', color: 'bg-emerald-600' },
++  { value: 2, label: 'Fácil', color: 'bg-green-600' },
++  { value: 3, label: 'Médio', color: 'bg-blue-600' },
++  { value: 4, label: 'Difícil', color: 'bg-orange-600' },
++  { value: 5, label: 'Muito difícil', color: 'bg-red-600' },
++];
++
++function StatCard({ label, value, helper }: { label: string; value: React.ReactNode; helper?: string }) {
++  return (
++    <div className='rounded-2xl border border-border-primary bg-surface-container-layer-01 p-4'>
++      <div className='text-sm text-text-secondary'>{label}</div>
++      <div className='mt-1 text-2xl font-semibold text-text-primary'>{value}</div>
++      {helper && <div className='mt-1 text-xs text-text-tertiary'>{helper}</div>}
++    </div>
++  );
++}
++
++interface SessionProps {
++  cards: ReviewCard[];
++  title: string;
++  workspaceId: string;
++  client: AxiosInstance;
++  onExit: () => void;
++  onReviewed: () => Promise<void>;
++}
++
++function ReviewSession({ cards: initialCards, title, workspaceId, client, onExit, onReviewed }: SessionProps) {
++  const { openPageModal } = useAppHandlers();
++  const [cards, setCards] = useState(initialCards);
++  const [selectedAnswer, setSelectedAnswer] = useState('');
++  const [classicCorrect, setClassicCorrect] = useState<boolean | null>(null);
++  const [revealed, setRevealed] = useState(false);
++  const [submitting, setSubmitting] = useState(false);
++  const [startedAt, setStartedAt] = useState(Date.now());
++  const card = cards[0];
++
++  useEffect(() => {
++    setCards(initialCards);
++  }, [initialCards]);
++
++  if (!card) {
++    return (
++      <div className='mx-auto flex h-full max-w-xl flex-col items-center justify-center gap-5 p-8 text-center'>
++        <div className='text-6xl'>🎉</div>
++        <h2 className='text-2xl font-semibold'>Sessão concluída</h2>
++        <p className='text-text-secondary'>Não há mais cartões nesta seleção.</p>
++        <Button variant='contained' onClick={onExit}>Voltar para Revisão</Button>
++      </div>
++    );
++  }
++
++  const objectiveCorrect =
++    card.card_type === 'classic'
++      ? classicCorrect
++      : selectedAnswer
++        ? selectedAnswer.trim().toLowerCase() === card.correct_answer.trim().toLowerCase()
++        : null;
++
++  const chooseObjectiveAnswer = (answer: string) => {
++    if (revealed) return;
++    setSelectedAnswer(answer);
++    setRevealed(true);
++  };
++
++  const rate = async (difficulty: number) => {
++    if (objectiveCorrect === null) return;
++    setSubmitting(true);
++    try {
++      const result = await submitReview(client, workspaceId, card.card_id, {
++        difficulty,
++        selected_answer: card.card_type === 'classic' ? undefined : selectedAnswer,
++        correct: card.card_type === 'classic' ? objectiveCorrect : undefined,
++        response_time_ms: Date.now() - startedAt,
++      });
++      const bonus = result.completion_bonus ? ` + ${result.completion_bonus} XP de conclusão` : '';
++
++      toast.success(`${result.correct ? 'Resposta correta' : 'Revisão registrada'} · +${result.xp_awarded} XP${bonus}`);
++      setCards((current) => current.slice(1));
++      setSelectedAnswer('');
++      setClassicCorrect(null);
++      setRevealed(false);
++      setStartedAt(Date.now());
++      await onReviewed();
++    } catch (e) {
++      toast.error(e instanceof Error ? e.message : 'Não foi possível registrar a revisão.');
++    } finally {
++      setSubmitting(false);
++    }
++  };
++
++  const options = card.card_type === 'true_false' ? ['true', 'false'] : card.choices;
++
++  return (
++    <div className='mx-auto flex h-full w-full max-w-3xl flex-col px-6 py-5'>
++      <div className='mb-5 flex items-center justify-between'>
++        <div>
++          <div className='text-sm text-text-secondary'>{title}</div>
++          <div className='font-medium'>{cards.length} {cards.length === 1 ? 'cartão' : 'cartões'} nesta sessão</div>
++        </div>
++        <Button onClick={onExit}>Encerrar</Button>
++      </div>
++
++      <div className='flex flex-1 flex-col justify-center'>
++        <div className='rounded-3xl border border-border-primary bg-surface-container-layer-01 p-8 shadow-sm'>
++          <div className='mb-3 text-xs font-semibold uppercase tracking-wider text-text-tertiary'>
++            {card.card_type === 'classic'
++              ? 'Flashcard clássico'
++              : card.card_type === 'multiple_choice'
++                ? 'Múltipla escolha'
++                : 'Certo ou errado'}
++          </div>
++          <h2 className='whitespace-pre-wrap text-2xl font-semibold leading-relaxed'>{card.front}</h2>
++
++          {card.card_type === 'classic' && !revealed && (
++            <Button className='!mt-8' variant='contained' size='large' onClick={() => setRevealed(true)}>
++              Revelar resposta
++            </Button>
++          )}
++
++          {card.card_type !== 'classic' && (
++            <div className='mt-7 grid gap-3'>
++              {options.map((option) => {
++                const display = card.card_type === 'true_false' ? (option === 'true' ? 'Certo' : 'Errado') : option;
++                const isSelected = selectedAnswer === option;
++                const isCorrect = revealed && option.toLowerCase() === card.correct_answer.toLowerCase();
++
++                return (
++                  <button
++                    key={option}
++                    className={`rounded-xl border p-4 text-left transition ${
++                      isCorrect
++                        ? 'border-green-500 bg-green-50 text-green-800'
++                        : revealed && isSelected
++                          ? 'border-red-500 bg-red-50 text-red-800'
++                          : 'border-border-primary hover:bg-fill-content-hover'
++                    }`}
++                    disabled={revealed}
++                    onClick={() => chooseObjectiveAnswer(option)}
++                  >
++                    {display}
++                  </button>
++                );
++              })}
++            </div>
++          )}
++
++          {revealed && (
++            <div className='mt-7 space-y-4 border-t border-border-primary pt-6'>
++              {card.card_type === 'classic' ? (
++                <div className='whitespace-pre-wrap text-lg leading-relaxed'>{card.back}</div>
++              ) : (
++                <>
++                  <div className={`font-semibold ${objectiveCorrect ? 'text-green-700' : 'text-red-700'}`}>
++                    {objectiveCorrect ? 'Você acertou' : 'Você errou'}
++                  </div>
++                  <div>
++                    Resposta correta:{' '}
++                    <strong>
++                      {card.card_type === 'true_false'
++                        ? card.correct_answer === 'true'
++                          ? 'Certo'
++                          : 'Errado'
++                        : card.correct_answer}
++                    </strong>
++                  </div>
++                  {card.explanation && <div className='whitespace-pre-wrap text-text-secondary'>{card.explanation}</div>}
++                </>
++              )}
++
++              {card.card_type === 'classic' && classicCorrect === null && (
++                <div className='flex gap-3'>
++                  <Button color='error' variant='outlined' onClick={() => setClassicCorrect(false)}>Errei</Button>
++                  <Button color='success' variant='outlined' onClick={() => setClassicCorrect(true)}>Acertei</Button>
++                </div>
++              )}
++
++              {objectiveCorrect === false && card.source_view_id && openPageModal && (
++                <div className='rounded-xl border border-amber-300 bg-amber-50 p-4'>
++                  <div className='font-medium text-amber-900'>Quer conferir por que errou?</div>
++                  <div className='mt-1 text-sm text-amber-800'>Abra rapidamente a página vinculada sem sair desta revisão.</div>
++                  <Button className='!mt-3' color='warning' variant='outlined' onClick={() => openPageModal(card.source_view_id!)}>
++                    Rever conteúdo
++                  </Button>
++                </div>
++              )}
++
++              {objectiveCorrect !== null && (
++                <div>
++                  <div className='mb-3 text-sm font-medium'>Como foi a dificuldade?</div>
++                  <div className='grid grid-cols-2 gap-2 sm:grid-cols-5'>
++                    {difficulties.map((difficulty) => (
++                      <button
++                        key={difficulty.value}
++                        disabled={submitting}
++                        onClick={() => void rate(difficulty.value)}
++                        className={`${difficulty.color} rounded-xl px-3 py-3 text-sm font-medium text-white opacity-90 transition hover:opacity-100 disabled:opacity-50`}
++                      >
++                        {difficulty.label}
++                      </button>
++                    ))}
++                  </div>
++                </div>
++              )}
++            </div>
++          )}
++        </div>
++      </div>
++    </div>
++  );
++}
++
++function ReviewPage() {
++  const { workspaceId = '' } = useParams();
++  const service = useService();
++  const client = service?.getAxiosInstance() || null;
++  const [dashboard, setDashboard] = useState<ReviewDashboard | null>(null);
++  const [taxonomy, setTaxonomy] = useState<TaxonomyNode[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [session, setSession] = useState<{ title: string; cards: ReviewCard[] } | null>(null);
++  const [createOpen, setCreateOpen] = useState(false);
++  const [importOpen, setImportOpen] = useState(false);
++  const [subjectId, setSubjectId] = useState('');
++  const [topicId, setTopicId] = useState('');
++  const [contentId, setContentId] = useState('');
++  const [taxonomyName, setTaxonomyName] = useState('');
++  const [taxonomyKind, setTaxonomyKind] = useState<TaxonomyNode['kind']>('subject');
++  const [taxonomyParent, setTaxonomyParent] = useState('');
++
++  const refresh = useCallback(async () => {
++    if (!client || !workspaceId) return;
++    const [nextDashboard, nextTaxonomy] = await Promise.all([
++      getDashboard(client, workspaceId),
++      getTaxonomy(client, workspaceId),
++    ]);
++
++    setDashboard(nextDashboard);
++    setTaxonomy(nextTaxonomy);
++  }, [client, workspaceId]);
++
++  useEffect(() => {
++    setLoading(true);
++    void refresh()
++      .catch((e) => toast.error(e instanceof Error ? e.message : 'Não foi possível carregar a revisão.'))
++      .finally(() => setLoading(false));
++  }, [refresh]);
++
++  const subjects = useMemo(() => taxonomy.filter((node) => node.kind === 'subject'), [taxonomy]);
++  const topics = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'topic' && (!subjectId || node.parent_id === subjectId)),
++    [taxonomy, subjectId]
++  );
++  const contents = useMemo(
++    () => taxonomy.filter((node) => node.kind === 'content' && (!topicId || node.parent_id === topicId)),
++    [taxonomy, topicId]
++  );
++  const taxonomyParents = useMemo(() => {
++    if (taxonomyKind === 'topic') return subjects;
++    if (taxonomyKind === 'content') return taxonomy.filter((node) => node.kind === 'topic');
++    return [];
++  }, [subjects, taxonomy, taxonomyKind]);
++
++  if (!client || loading || !dashboard) {
++    return <div className='flex h-full items-center justify-center text-text-secondary'>Carregando Revisão…</div>;
++  }
++
++  if (session) {
++    return (
++      <ReviewSession
++        cards={session.cards}
++        title={session.title}
++        workspaceId={workspaceId}
++        client={client}
++        onExit={() => {
++          setSession(null);
++          void refresh();
++        }}
++        onReviewed={refresh}
++      />
++    );
++  }
++
++  const progress = dashboard.goal ? Math.round((dashboard.completed / dashboard.goal) * 100) : 100;
++
++  const startFilteredReview = async () => {
++    const cards = await getCards(client, workspaceId, {
++      ...(subjectId ? { subject_id: subjectId } : {}),
++      ...(topicId ? { topic_id: topicId } : {}),
++      ...(contentId ? { content_id: contentId } : {}),
++    });
++
++    setSession({ title: 'Revisão por conteúdo', cards });
++  };
++
++  const addTaxonomy = async () => {
++    if (!taxonomyName.trim()) return;
++    try {
++      await createTaxonomy(client, workspaceId, {
++        name: taxonomyName.trim(),
++        kind: taxonomyKind,
++        parent_id: taxonomyKind === 'subject' ? null : taxonomyParent || null,
++      });
++      setTaxonomyName('');
++      setTaxonomyParent('');
++      await refresh();
++      toast.success('Divisão criada');
++    } catch (e) {
++      toast.error(e instanceof Error ? e.message : 'Não foi possível criar a divisão.');
++    }
++  };
++
++  return (
++    <div className='h-full overflow-y-auto bg-background-primary'>
++      <div className='mx-auto max-w-6xl px-6 py-8'>
++        <div className='mb-8 flex flex-wrap items-start justify-between gap-4'>
++          <div>
++            <div className='mb-1 text-sm font-medium text-purple-600'>CENTRAL DE ESTUDOS</div>
++            <h1 className='text-3xl font-bold'>🧠 Revisão</h1>
++            <p className='mt-2 text-text-secondary'>Sua fila diária muda conforme os cartões programados para hoje.</p>
++          </div>
++          <div className='flex flex-wrap gap-2'>
++            <Button variant='outlined' size='large' onClick={() => setImportOpen(true)}>Importar com IA</Button>
++            <Button variant='contained' size='large' onClick={() => setCreateOpen(true)}>Novo flashcard</Button>
++          </div>
++        </div>
++
++        <div className='mb-6 grid grid-cols-2 gap-3 md:grid-cols-4'>
++          <StatCard label='Progresso de hoje' value={`${dashboard.completed}/${dashboard.goal}`} helper={`${dashboard.remaining} restantes`} />
++          <StatCard label='XP de hoje' value={`+${dashboard.xp_today}`} helper={`${dashboard.total_xp} XP total`} />
++          <StatCard label='Sequência' value={`🔥 ${dashboard.current_streak}`} helper={`Recorde: ${dashboard.longest_streak} dias`} />
++          <StatCard label='Nível' value={dashboard.level} helper={`${dashboard.reviewed_today} respostas hoje`} />
++        </div>
++
++        <div className='mb-6 rounded-2xl border border-border-primary bg-surface-container-layer-01 p-5'>
++          <div className='mb-3 flex items-center justify-between'>
++            <div>
++              <h2 className='text-lg font-semibold'>Revisão diária</h2>
++              <p className='text-sm text-text-secondary'>
++                {dashboard.overdue} atrasados · {dashboard.new_cards} novos · {dashboard.learning} em aprendizagem
++              </p>
++            </div>
++            {dashboard.remaining > 0 ? (
++              <Button variant='contained' onClick={() => setSession({ title: 'Revisão diária', cards: dashboard.queue })}>
++                {dashboard.completed ? 'Continuar' : 'Começar'}
++              </Button>
++            ) : (
++              <div className='font-medium text-green-700'>✓ Concluída</div>
++            )}
++          </div>
++          <LinearProgress variant='determinate' value={progress} className='!h-3 !rounded-full' />
++          <div className='mt-2 text-right text-sm text-text-secondary'>{progress}%</div>
++        </div>
++
++        <div className='grid gap-6 lg:grid-cols-2'>
++          <section className='rounded-2xl border border-border-primary bg-surface-container-layer-01 p-5'>
++            <h2 className='text-lg font-semibold'>Revisar por matéria ou tópico</h2>
++            <p className='mb-4 text-sm text-text-secondary'>A matéria inclui todos os tópicos e conteúdos abaixo dela.</p>
++            <div className='grid gap-3 sm:grid-cols-3'>
++              <TextField
++                select
++                label='Matéria'
++                value={subjectId}
++                onChange={(event) => {
++                  setSubjectId(event.target.value);
++                  setTopicId('');
++                  setContentId('');
++                }}
++              >
++                <MenuItem value=''>Todas</MenuItem>
++                {subjects.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++              </TextField>
++              <TextField
++                select
++                label='Tópico'
++                value={topicId}
++                disabled={!subjectId}
++                onChange={(event) => {
++                  setTopicId(event.target.value);
++                  setContentId('');
++                }}
++              >
++                <MenuItem value=''>Todos</MenuItem>
++                {topics.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++              </TextField>
++              <TextField
++                select
++                label='Conteúdo'
++                value={contentId}
++                disabled={!topicId}
++                onChange={(event) => setContentId(event.target.value)}
++              >
++                <MenuItem value=''>Todos</MenuItem>
++                {contents.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++              </TextField>
++            </div>
++            <Button className='!mt-4' variant='outlined' onClick={() => void startFilteredReview()}>Iniciar revisão filtrada</Button>
++          </section>
++
++          <section className='rounded-2xl border border-border-primary bg-surface-container-layer-01 p-5'>
++            <h2 className='text-lg font-semibold'>Criar divisões</h2>
++            <p className='mb-4 text-sm text-text-secondary'>Organize em Matéria → Tópico → Conteúdo.</p>
++            <div className='grid gap-3 sm:grid-cols-3'>
++              <TextField
++                select
++                label='Tipo'
++                value={taxonomyKind}
++                onChange={(event) => {
++                  setTaxonomyKind(event.target.value as TaxonomyNode['kind']);
++                  setTaxonomyParent('');
++                }}
++              >
++                <MenuItem value='subject'>Matéria</MenuItem>
++                <MenuItem value='topic'>Tópico</MenuItem>
++                <MenuItem value='content'>Conteúdo</MenuItem>
++              </TextField>
++              <TextField
++                select
++                label='Dentro de'
++                value={taxonomyParent}
++                disabled={taxonomyKind === 'subject'}
++                onChange={(event) => setTaxonomyParent(event.target.value)}
++              >
++                <MenuItem value=''>Selecione</MenuItem>
++                {taxonomyParents.map((node) => <MenuItem key={node.taxonomy_id} value={node.taxonomy_id}>{node.name}</MenuItem>)}
++              </TextField>
++              <TextField label='Nome' value={taxonomyName} onChange={(event) => setTaxonomyName(event.target.value)} />
++            </div>
++            <Button className='!mt-4' variant='outlined' onClick={() => void addTaxonomy()}>Criar divisão</Button>
++          </section>
++        </div>
++      </div>
++
++      <FlashcardFormDialog
++        open={createOpen}
++        workspaceId={workspaceId}
++        requestInstance={client}
++        onClose={() => setCreateOpen(false)}
++        onCreated={async () => {
++          await refresh();
++          toast.success('Flashcard adicionado à revisão diária');
++        }}
++      />
++      <FlashcardImportDialog
++        open={importOpen}
++        workspaceId={workspaceId}
++        requestInstance={client}
++        onClose={() => setImportOpen(false)}
++        onImported={async (cards) => {
++          await refresh();
++          toast.success(`${cards.length} flashcard${cards.length === 1 ? '' : 's'} importado${cards.length === 1 ? '' : 's'}`);
++        }}
++      />
++    </div>
++  );
++}
++
++export default ReviewPage;

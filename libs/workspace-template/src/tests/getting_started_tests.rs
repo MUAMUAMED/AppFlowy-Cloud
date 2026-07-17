@@ -130,29 +130,29 @@ mod tests {
     let shared_space = &views[1];
 
     // General
-    assert_eq!(general_space.parent_view.name, "Study");
+    assert_eq!(general_space.parent_view.name, "Espaço de estudo");
     // study space contains dashboard, planning, flashcards, questions, and notes
     assert_eq!(general_space.child_views.len(), 5);
     // the first document contains 3 guide children
     assert_eq!(general_space.child_views[0].child_views.len(), 3);
     // the study databases and notes page contain 0 children
     assert_eq!(general_space.child_views[1].child_views.len(), 0);
-    assert_eq!(general_space.child_views[1].parent_view.name, "Study plan");
+    assert_eq!(general_space.child_views[1].parent_view.name, "Plano de estudos");
     assert_eq!(general_space.child_views[2].child_views.len(), 0);
     assert_eq!(general_space.child_views[3].child_views.len(), 0);
     assert_eq!(general_space.child_views[4].child_views.len(), 0);
     assert_eq!(
       general_space.child_views[2].parent_view.name,
-      "Global flashcards"
+      "Flashcards globais"
     );
     assert_eq!(
       general_space.child_views[3].parent_view.name,
-      "Question bank"
+      "Banco de questões"
     );
-    assert_eq!(general_space.child_views[4].parent_view.name, "Class notes");
+    assert_eq!(general_space.child_views[4].parent_view.name, "Anotações de aula");
 
     // Resources
-    assert_eq!(shared_space.parent_view.name, "Resources");
+    assert_eq!(shared_space.parent_view.name, "Materiais");
     // resources space is empty by default
     assert!(shared_space.child_views.is_empty());
   }

@@ -114,6 +114,8 @@ pub struct CreateWorkspaceParam {
   pub workspace_name: Option<String>,
   #[serde(default)]
   pub workspace_icon: Option<String>,
+  #[serde(default)]
+  pub workspace_template: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

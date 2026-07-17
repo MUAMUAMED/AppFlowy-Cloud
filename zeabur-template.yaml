@@ -1,0 +1,439 @@
+apiVersion: zeabur.com/v1
+kind: Template
+
+metadata:
+  name: StudyFlash
+
+spec:
+  description: AppFlowy Cloud personalizado para estudo, flashcards e revisão espaçada.
+  tags:
+    - Tool
+    - Productivity
+  resourceRequirement:
+    minConfig:
+      cpu: 2
+      ram: 4
+    recommendedConfig:
+      cpu: 2
+      ram: 4
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Domínio do StudyFlash
+      description: Domínio público usado pelo navegador e pelos aplicativos.
+    - key: ADMIN_EMAIL
+      type: STRING
+      name: E-mail do administrador
+      description: E-mail da conta inicial que terá acesso ao sistema.
+  readme: |-
+    # StudyFlash
+
+    Instalação privada do AppFlowy Cloud com revisão espaçada, flashcards,
+    propriedades de estudo, importação em lote e Graph View.
+
+    O Gateway é o único serviço público. PostgreSQL, Redis, MinIO, GoTrue,
+    backend, frontend e worker permanecem na rede privada do projeto.
+  services:
+    - name: PostgreSQL
+      template: PREBUILT
+      spec:
+        source:
+          image: pgvector/pgvector:pg16
+        ports:
+          - id: database
+            port: 5432
+            type: TCP
+        portForwarding:
+          enabled: false
+        volumes:
+          - id: data
+            dir: /var/lib/postgresql/data
+        env:
+          POSTGRES_USER:
+            default: appflowy
+            expose: true
+          POSTGRES_DB:
+            default: appflowy
+            expose: true
+          POSTGRES_PASSWORD:
+            default: ${PASSWORD}
+            expose: true
+          POSTGRES_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          POSTGRES_PORT:
+            default: "5432"
+            expose: true
+          DATABASE_URL:
+            default: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+            expose: true
+
+    - name: Redis
+      template: PREBUILT
+      spec:
+        source:
+          image: redis:7.2-alpine
+          command:
+            - redis-server
+            - --requirepass
+            - ${REDIS_PASSWORD}
+        ports:
+          - id: database
+            port: 6379
+            type: TCP
+        portForwarding:
+          enabled: false
+        env:
+          REDIS_PASSWORD:
+            default: ${PASSWORD}
+            expose: true
+          REDIS_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          REDIS_PORT:
+            default: "6379"
+            expose: true
+          REDIS_URI:
+            default: redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}
+            expose: true
+
+    - name: MinIO
+      template: PREBUILT
+      spec:
+        source:
+          image: minio/minio:latest
+          command:
+            - minio
+            - server
+            - /data
+            - --console-address
+            - :9001
+        ports:
+          - id: api
+            port: 9000
+            type: HTTP
+          - id: console
+            port: 9001
+            type: HTTP
+        volumes:
+          - id: data
+            dir: /data
+        env:
+          MINIO_ROOT_USER:
+            default: studyflash
+            expose: true
+          MINIO_ROOT_PASSWORD:
+            default: ${PASSWORD}
+            expose: true
+          MINIO_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          MINIO_API_URL:
+            default: http://${MINIO_HOST}:9000
+            expose: true
+
+    - name: GoTrue
+      template: PREBUILT
+      dependencies:
+        - PostgreSQL
+      spec:
+        source:
+          image: appflowyinc/gotrue:latest
+        ports:
+          - id: auth
+            port: 9999
+            type: HTTP
+        healthCheck:
+          type: HTTP
+          port: auth
+          http:
+            path: /health
+        env:
+          GOTRUE_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          GOTRUE_ADMIN_EMAIL:
+            default: ${ADMIN_EMAIL}
+          GOTRUE_ADMIN_PASSWORD:
+            default: ${PASSWORD}
+            expose: true
+          GOTRUE_DISABLE_SIGNUP:
+            default: "false"
+          GOTRUE_SITE_URL:
+            default: appflowy-flutter://
+          GOTRUE_URI_ALLOW_LIST:
+            default: "**"
+          GOTRUE_JWT_SECRET:
+            default: ${PASSWORD}
+            expose: true
+          GOTRUE_JWT_EXP:
+            default: "604800"
+          GOTRUE_JWT_ADMIN_GROUP_NAME:
+            default: supabase_admin
+          GOTRUE_DB_DRIVER:
+            default: postgres
+          DATABASE_URL:
+            default: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?search_path=auth
+          API_EXTERNAL_URL:
+            default: https://${PUBLIC_DOMAIN}/gotrue
+          PORT:
+            default: "9999"
+          GOTRUE_MAILER_AUTOCONFIRM:
+            default: "true"
+          GOTRUE_RATE_LIMIT_EMAIL_SENT:
+            default: "100"
+        instructions:
+          - title: E-mail inicial
+            content: ${ADMIN_EMAIL}
+          - title: Senha inicial
+            content: ${GOTRUE_ADMIN_PASSWORD}
+
+    - name: AppFlowy Cloud
+      template: GIT
+      dependencies:
+        - PostgreSQL
+        - Redis
+        - MinIO
+        - GoTrue
+      spec:
+        source:
+          source: GITHUB
+          repo: 1299668535
+          branch: codex/add-flashcard-format-to-system
+        ports:
+          - id: api
+            port: 8000
+            type: HTTP
+        healthCheck:
+          type: HTTP
+          port: api
+          http:
+            path: /health
+        env:
+          APPFLOWY_CLOUD_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          PORT:
+            default: "8000"
+          RUST_LOG:
+            default: info
+          APPFLOWY_ENVIRONMENT:
+            default: production
+          APPFLOWY_DATABASE_URL:
+            default: ${DATABASE_URL}
+          APPFLOWY_DATABASE_MAX_CONNECTIONS:
+            default: "20"
+          APPFLOWY_REDIS_URI:
+            default: ${REDIS_URI}
+          APPFLOWY_GOTRUE_JWT_SECRET:
+            default: ${GOTRUE_JWT_SECRET}
+          APPFLOWY_GOTRUE_BASE_URL:
+            default: http://${GOTRUE_HOST}:9999
+          APPFLOWY_S3_CREATE_BUCKET:
+            default: "true"
+          APPFLOWY_S3_USE_MINIO:
+            default: "true"
+          APPFLOWY_S3_MINIO_URL:
+            default: ${MINIO_API_URL}
+          APPFLOWY_S3_ACCESS_KEY:
+            default: ${MINIO_ROOT_USER}
+          APPFLOWY_S3_SECRET_KEY:
+            default: ${MINIO_ROOT_PASSWORD}
+          APPFLOWY_S3_BUCKET:
+            default: appflowy
+          APPFLOWY_S3_REGION:
+            default: us-east-1
+          APPFLOWY_S3_PRESIGNED_URL_ENDPOINT:
+            default: https://${PUBLIC_DOMAIN}/minio-api
+          APPFLOWY_ACCESS_CONTROL:
+            default: "true"
+          APPFLOWY_WEB_URL:
+            default: https://${PUBLIC_DOMAIN}
+          APPFLOWY_BASE_URL:
+            default: https://${PUBLIC_DOMAIN}
+          APPFLOWY_SEARCH_SERVICE_URL:
+            default: ""
+          AI_ENABLED:
+            default: "false"
+          SIGNUP_WHITELIST_ENABLED:
+            default: "false"
+          GUEST_INVITES_REQUIRE_ADMIN_APPROVAL:
+            default: "false"
+
+    - name: AppFlowy Worker
+      template: PREBUILT
+      dependencies:
+        - PostgreSQL
+        - Redis
+        - MinIO
+        - AppFlowy Cloud
+      spec:
+        source:
+          image: appflowyinc/appflowy_worker:latest
+        env:
+          RUST_LOG:
+            default: info
+          APPFLOWY_ENVIRONMENT:
+            default: production
+          APPFLOWY_WORKER_ENVIRONMENT:
+            default: production
+          APPFLOWY_WORKER_REDIS_URL:
+            default: ${REDIS_URI}
+          APPFLOWY_WORKER_DATABASE_URL:
+            default: ${DATABASE_URL}
+          APPFLOWY_WORKER_DATABASE_NAME:
+            default: ${POSTGRES_DB}
+          APPFLOWY_WORKER_IMPORT_TICK_INTERVAL:
+            default: "30"
+          APPFLOWY_S3_USE_MINIO:
+            default: "true"
+          APPFLOWY_S3_MINIO_URL:
+            default: ${MINIO_API_URL}
+          APPFLOWY_S3_ACCESS_KEY:
+            default: ${MINIO_ROOT_USER}
+          APPFLOWY_S3_SECRET_KEY:
+            default: ${MINIO_ROOT_PASSWORD}
+          APPFLOWY_S3_BUCKET:
+            default: appflowy
+          APPFLOWY_S3_REGION:
+            default: us-east-1
+
+    - name: AppFlowy Web
+      template: GIT
+      dependencies:
+        - AppFlowy Cloud
+      spec:
+        source:
+          source: GITHUB
+          repo: 1299668535
+          branch: codex/add-flashcard-format-to-system
+          watchPaths:
+            - docker/appflowy-web-review-system.patch
+          dockerfile: |-
+            # syntax=docker/dockerfile:1
+            FROM alpine/git:2.45.2 AS source
+            WORKDIR /source
+            RUN git clone --depth 1 --branch 0.10.0 https://github.com/AppFlowy-IO/AppFlowy-Web.git .
+            COPY docker/appflowy-web-review-system.patch /tmp/review-system.patch
+            RUN git apply /tmp/review-system.patch
+
+            FROM node:20.12.0-alpine AS builder
+            ENV NODE_ENV=production
+            WORKDIR /app
+            COPY --from=source /source/package.json /source/pnpm-lock.yaml ./
+            RUN corepack enable && pnpm install --frozen-lockfile
+            COPY --from=source /source ./
+            RUN sed -i 's/\r$//' docker/entrypoint.sh
+            RUN pnpm run type-check
+            RUN pnpm run build
+
+            FROM nginx:1.25-alpine
+            RUN apk add --no-cache tini
+            COPY --from=builder /app/dist /usr/share/nginx/html/
+            COPY --from=builder /app/docker/nginx.conf /etc/nginx/nginx.conf
+            COPY --from=builder /app/docker/entrypoint.sh /docker-entrypoint.sh
+            RUN chmod +x /docker-entrypoint.sh
+            ENTRYPOINT ["/sbin/tini", "--", "/docker-entrypoint.sh"]
+        ports:
+          - id: web
+            port: 80
+            type: HTTP
+        env:
+          APPFLOWY_WEB_HOST:
+            default: ${CONTAINER_HOSTNAME}
+            expose: true
+          APPFLOWY_BASE_URL:
+            default: https://${PUBLIC_DOMAIN}
+          APPFLOWY_GOTRUE_BASE_URL:
+            default: https://${PUBLIC_DOMAIN}/gotrue
+          APPFLOWY_WS_BASE_URL:
+            default: wss://${PUBLIC_DOMAIN}/ws
+
+    - name: Gateway
+      template: PREBUILT
+      domainKey: PUBLIC_DOMAIN
+      dependencies:
+        - AppFlowy Cloud
+        - AppFlowy Web
+        - GoTrue
+        - MinIO
+      spec:
+        source:
+          image: nginx:1.25-alpine
+        ports:
+          - id: web
+            port: 80
+            type: HTTP
+        configs:
+          - path: /etc/nginx/nginx.conf
+            permission: 420
+            envsubst: false
+            template: |-
+              events {
+                  worker_connections 1024;
+              }
+
+              http {
+                  map $http_upgrade $connection_upgrade {
+                      default upgrade;
+                      '' close;
+                  }
+
+                  server {
+                      listen 80;
+                      client_max_body_size 2G;
+                      underscores_in_headers on;
+
+                      location /gotrue/ {
+                          proxy_pass http://gotrue.zeabur.internal:9999/;
+                          proxy_set_header Host $http_host;
+                          proxy_pass_request_headers on;
+                      }
+
+                      location /ws {
+                          proxy_pass http://appflowy-cloud.zeabur.internal:8000;
+                          proxy_http_version 1.1;
+                          proxy_set_header Upgrade $http_upgrade;
+                          proxy_set_header Connection "upgrade";
+                          proxy_set_header Host $host;
+                          proxy_set_header X-Real-IP $remote_addr;
+                          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                          proxy_set_header X-Forwarded-Proto $scheme;
+                          proxy_read_timeout 86400s;
+                      }
+
+                      location /api/import {
+                          proxy_pass http://appflowy-cloud.zeabur.internal:8000;
+                          proxy_set_header X-Request-Id $request_id;
+                          proxy_set_header Host $http_host;
+                          proxy_read_timeout 600s;
+                          proxy_connect_timeout 600s;
+                          proxy_send_timeout 600s;
+                          proxy_request_buffering off;
+                          proxy_buffering off;
+                          client_max_body_size 2G;
+                      }
+
+                      location /api {
+                          proxy_pass http://appflowy-cloud.zeabur.internal:8000;
+                          proxy_set_header X-Request-Id $request_id;
+                          proxy_set_header Host $http_host;
+                      }
+
+                      location /minio-api/ {
+                          proxy_pass http://minio.zeabur.internal:9000/;
+                          proxy_set_header Host minio.zeabur.internal:9000;
+                          proxy_set_header X-Real-IP $remote_addr;
+                          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                          proxy_set_header X-Forwarded-Proto $scheme;
+                          proxy_request_buffering off;
+                          client_max_body_size 0;
+                      }
+
+                      location / {
+                          proxy_pass http://appflowy-web.zeabur.internal:80;
+                          proxy_set_header X-Scheme $scheme;
+                          proxy_set_header Host $host;
+                      }
+                  }
+              }

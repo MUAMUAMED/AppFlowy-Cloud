@@ -445,6 +445,15 @@ async fn create_workspace_handler(
     .unwrap_or_else(|| format!("workspace_{}", chrono::Utc::now().timestamp()));
 
   let workspace_icon = create_workspace_param.workspace_icon.unwrap_or_default();
+  let workspace_template = create_workspace_param
+    .workspace_template
+    .unwrap_or_else(|| "study".to_string());
+  if !matches!(workspace_template.as_str(), "study" | "blank") {
+    return Err(AppError::InvalidRequest(format!(
+      "unsupported workspace template: {workspace_template}"
+    ))
+    .into());
+  }
   let new_workspace = workspace::ops::create_workspace_for_user(
     &state.pg_pool,
     state.workspace_access_control.clone(),
@@ -454,6 +463,7 @@ async fn create_workspace_handler(
     uid,
     &workspace_name,
     &workspace_icon,
+    &workspace_template,
   )
   .await?;
 

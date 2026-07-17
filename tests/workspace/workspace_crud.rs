@@ -145,6 +145,7 @@ async fn add_and_delete_workspace_for_user() {
   let newly_added_workspace = c
     .create_workspace(CreateWorkspaceParam {
       workspace_name: Some("my_workspace".to_string()),
+      workspace_template: None,
       workspace_icon: Some("🏡".to_string()),
     })
     .await

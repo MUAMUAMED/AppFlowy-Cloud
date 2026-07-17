@@ -33,6 +33,9 @@ RUN if [ "$PROFILE" = "release" ]; then \
 
 COPY . .
 ENV SQLX_OFFLINE true
+# Keep local/custom image builds practical while preserving release optimizations.
+ENV CARGO_PROFILE_RELEASE_LTO=false
+ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 
 # Build the project
 RUN echo "Building with profile: ${PROFILE}, features: ${FEATURES}, "

@@ -124,9 +124,11 @@ pub async fn create_workspace_for_user(
   user_uid: i64,
   workspace_name: &str,
   workspace_icon: &str,
+  workspace_template: &str,
 ) -> Result<AFWorkspace, AppResponseError> {
   let new_workspace_row =
     insert_user_workspace(pg_pool, user_uuid, workspace_name, workspace_icon, true).await?;
+  let workspace_id = new_workspace_row.workspace_id;
 
   workspace_access_control
     .insert_role(&user_uid, &new_workspace_row.workspace_id, AFRole::Owner)
@@ -135,15 +137,38 @@ pub async fn create_workspace_for_user(
   // add create initial collab for user
   let mut txn = pg_pool.begin().await?;
   let start = Instant::now();
-  initialize_workspace_for_user(
-    user_uid,
-    user_uuid,
-    &new_workspace_row,
-    &mut txn,
-    vec![GettingStartedTemplate],
-    collab_storage,
-  )
-  .await?;
+  if workspace_template == "blank" {
+    create_workspace_collab(
+      user_uid,
+      workspace_id,
+      workspace_name,
+      collab_storage,
+      &mut txn,
+    )
+    .await?;
+    if let Some(&database_storage_id) = new_workspace_row.database_storage_id.as_ref() {
+      create_workspace_database_collab(
+        workspace_id,
+        &user_uid,
+        database_storage_id,
+        collab_storage,
+        &mut txn,
+        vec![],
+      )
+      .await?;
+    }
+    create_user_awareness(&user_uid, user_uuid, workspace_id, collab_storage, &mut txn).await?;
+  } else {
+    initialize_workspace_for_user(
+      user_uid,
+      user_uuid,
+      &new_workspace_row,
+      &mut txn,
+      vec![GettingStartedTemplate],
+      collab_storage,
+    )
+    .await?;
+  }
   txn.commit().await?;
   collab_metrics.observe_pg_tx(start.elapsed());
 

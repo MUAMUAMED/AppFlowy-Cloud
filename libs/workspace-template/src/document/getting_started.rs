@@ -171,7 +171,7 @@ impl GettingStartedTemplate {
   ) -> ViewBuilder {
     // getting started view
     let mut view_builder = view_builder
-      .with_name("Getting started")
+      .with_name("Comece aqui")
       .with_icon("🌟")
       .with_extra(r#"{"font_layout":"normal","line_height_layout":"normal","cover":{"type":"gradient","value":"appflowy_them_color_gradient4"},"font":null}"#)
       .with_view_id(getting_started_view_uuid);
@@ -280,7 +280,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
         let created_at = timestamp();
         let mut view_builder = view_builder
           .with_view_id(general_view_uuid.clone())
-          .with_name("Study")
+          .with_name("Espaço de estudo")
           .with_extra(&format!(
               "{{\"is_space\":true,\"space_icon\":\"interface_essential/home-3\",\"space_icon_color\":\"0xFFA34AFD\",\"space_permission\":0,\"space_created_at\":{}}}",
               created_at
@@ -302,7 +302,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
             let child_view_builder = child_view_builder
             .with_layout(ViewLayout::Board)
             .with_view_id(todos_view_uuid.clone())
-            .with_name("Study plan")
+            .with_name("Plano de estudos")
             .with_icon("✅");
             child_view_builder.build()
           }
@@ -313,7 +313,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
             let child_view_builder = child_view_builder
             .with_layout(ViewLayout::Grid)
             .with_view_id(flashcards_view_uuid.clone())
-            .with_name("Global flashcards")
+            .with_name("Flashcards globais")
             .with_icon("🧠");
             child_view_builder.build()
           }
@@ -324,7 +324,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
             let child_view_builder = child_view_builder
             .with_layout(ViewLayout::Grid)
             .with_view_id(question_bank_view_uuid.clone())
-            .with_name("Question bank")
+            .with_name("Banco de questões")
             .with_icon("❓");
             child_view_builder.build()
           }
@@ -335,7 +335,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
             let child_view_builder = child_view_builder
             .with_layout(ViewLayout::Document)
             .with_view_id(class_notes_view_uuid.clone())
-            .with_name("Class notes")
+            .with_name("Anotações de aula")
             .with_icon("📝");
             child_view_builder.build()
           }
@@ -351,7 +351,7 @@ impl WorkspaceTemplate for GettingStartedTemplate {
         let created_at = timestamp();
         let view_builder = view_builder
         .with_view_id(shared_view_uuid.clone())
-        .with_name("Resources")
+        .with_name("Materiais")
         .with_extra(&format!(
             "{{\"is_space\":true,\"space_icon\":\"interface_essential/star-2\",\"space_icon_color\":\"0xFFFFBA00\",\"space_permission\":0,\"space_created_at\":{}}}",
             created_at
