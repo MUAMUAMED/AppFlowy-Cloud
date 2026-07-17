@@ -269,7 +269,7 @@ spec:
         - AppFlowy Cloud
       spec:
         source:
-          image: appflowyinc/appflowy_worker:latest
+          image: appflowyinc/appflowy_worker:0.15.17
         env:
           RUST_LOG:
             default: info
@@ -347,7 +347,7 @@ spec:
           APPFLOWY_GOTRUE_BASE_URL:
             default: https://${PUBLIC_DOMAIN}/gotrue
           APPFLOWY_WS_BASE_URL:
-            default: wss://${PUBLIC_DOMAIN}/ws
+            default: wss://${PUBLIC_DOMAIN}/ws/v2
 
     - name: Gateway
       template: PREBUILT
