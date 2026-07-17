@@ -2402,3 +2402,33 @@ index 0000000..5ecd9de
 +}
 +
 +export default ReviewPage;
+diff --git a/src/pages/LoginPage.tsx b/src/pages/LoginPage.tsx
+index eb1d260..acb0635 100644
+--- a/src/pages/LoginPage.tsx
++++ b/src/pages/LoginPage.tsx
+@@ -26,10 +26,22 @@ function LoginPage() {
+     }
+ 
+     if (isAuthenticated && redirectTo) {
+-      const decodedRedirect = decodeURIComponent(redirectTo);
++      try {
++        const decodedRedirect = decodeURIComponent(redirectTo);
++        const target = new URL(decodedRedirect, window.location.origin);
+ 
+-      if (decodedRedirect !== window.location.href) {
+-        window.location.href = decodedRedirect;
++        // Never follow stale self-hosted links from another origin (for
++        // example, localhost links left in an old login URL).
++        if (target.origin !== window.location.origin) {
++          window.location.replace('/app');
++          return;
++        }
++
++        if (target.href !== window.location.href) {
++          window.location.assign(target.href);
++        }
++      } catch {
++        window.location.replace('/app');
+       }
+     }
+   }, [action, force, isAuthenticated, redirectTo]);
