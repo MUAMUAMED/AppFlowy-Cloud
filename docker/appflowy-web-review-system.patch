@@ -2432,3 +2432,211 @@ index eb1d260..acb0635 100644
        }
      }
    }, [action, force, isAuthenticated, redirectTo]);
+diff --git a/src/components/editor/parsers/block-converters.ts b/src/components/editor/parsers/block-converters.ts
+index a5c99e6..91c130e 100644
+--- a/src/components/editor/parsers/block-converters.ts
++++ b/src/components/editor/parsers/block-converters.ts
+@@ -156,6 +156,25 @@ export function parseList(node: HastElement): ParsedBlock[] {
+       const elem = child;
+ 
+       if (elem.tagName === 'li') {
++        // Nested lists are separate blocks. Excluding them from the current
++        // item's inline content avoids results such as
++        // "Parent itemChild item" when rich HTML is pasted.
++        const inlineElement: HastElement = {
++          ...elem,
++          children: elem.children.filter(
++            (itemChild) =>
++              !(
++                itemChild.type === 'element' &&
++                (itemChild.tagName === 'ul' || itemChild.tagName === 'ol')
++              )
++          ),
++        };
++        const nestedLists = elem.children.filter(
++          (itemChild): itemChild is HastElement =>
++            itemChild.type === 'element' &&
++            (itemChild.tagName === 'ul' || itemChild.tagName === 'ol')
++        );
++
+         // Check for checkbox (todo list)
+         const input = elem.children.find((c) => {
+           return c.type === 'element' && (c).tagName === 'input';
+@@ -168,18 +187,18 @@ export function parseList(node: HastElement): ParsedBlock[] {
+           children.push({
+             type: BlockType.TodoListBlock,
+             data: { checked } as BlockData,
+-            text: extractTextFromHAST(elem).trim(),
+-            formats: extractInlineFormatsFromHAST(elem),
+-            children: [],
++            text: extractTextFromHAST(inlineElement).trim(),
++            formats: extractInlineFormatsFromHAST(inlineElement),
++            children: nestedLists.flatMap(parseList),
+           });
+         } else {
+           // Regular list item
+           children.push({
+             type,
+             data: (isOrdered ? { number: children.length + 1 } : {}) as BlockData,
+-            text: extractTextFromHAST(elem).trim(),
+-            formats: extractInlineFormatsFromHAST(elem),
+-            children: [],
++            text: extractTextFromHAST(inlineElement).trim(),
++            formats: extractInlineFormatsFromHAST(inlineElement),
++            children: nestedLists.flatMap(parseList),
+           });
+         }
+       }
+diff --git a/src/components/editor/parsers/html-parser.ts b/src/components/editor/parsers/html-parser.ts
+index 8965774..dec5420 100644
+--- a/src/components/editor/parsers/html-parser.ts
++++ b/src/components/editor/parsers/html-parser.ts
+@@ -1,11 +1,15 @@
+ import rehypeParse from 'rehype-parse';
+ import { unified } from 'unified';
+ 
++import { BlockType } from '@/application/types';
++
+ import { elementToBlock } from './block-converters';
+ import { sanitizeHTML } from './sanitize';
+ import { HTMLParseOptions, ParsedBlock } from './types';
+ 
+-import type { Element as HastElement, Root as HastRoot } from 'hast';
++import type { Element as HastElement, Root as HastRoot, Text as HastText } from 'hast';
++
++type SupportedHastNode = HastElement | HastText;
+ 
+ /**
+  * Parses HTML string into structured blocks using AST-based parsing
+@@ -41,7 +45,7 @@ export function parseHTML(html: string, options: HTMLParseOptions = {}): ParsedB
+     const tree = deserializeHTMLToAST(safeHTML);
+ 
+     // Step 3: Convert HAST to ParsedBlocks
+-    const blocks = convertASTToAppFlowyBlocks(tree.children as HastElement[], options);
++    const blocks = convertASTToAppFlowyBlocks(tree.children as SupportedHastNode[], options);
+ 
+     return blocks;
+   } catch (error) {
+@@ -70,7 +74,7 @@ function deserializeHTMLToAST(html: string): HastRoot {
+  * @param depth Current depth (for max depth limiting)
+  * @returns Array of parsed blocks
+  */
+-function convertASTToAppFlowyBlocks(nodes: HastElement[], options: HTMLParseOptions, depth = 0): ParsedBlock[] {
++function convertASTToAppFlowyBlocks(nodes: SupportedHastNode[], options: HTMLParseOptions, depth = 0): ParsedBlock[] {
+   const maxDepth = options.maxDepth || 20;
+ 
+   if (depth > maxDepth) {
+@@ -81,7 +85,33 @@ function convertASTToAppFlowyBlocks(nodes: HastElement[], options: HTMLParseOpti
+   const blocks: ParsedBlock[] = [];
+ 
+   for (const node of nodes) {
+-    if (node.type !== 'element') continue;
++    if (node.type === 'text') {
++      if (node.value.trim().length > 0) {
++        blocks.push({
++          type: BlockType.Paragraph,
++          data: {},
++          text: node.value,
++          formats: [],
++          children: [],
++        });
++      }
++
++      continue;
++    }
++
++    // Clipboard HTML frequently wraps the whole document in a div. Treat a
++    // div containing block elements as a container; parsing it as a paragraph
++    // would concatenate every heading, paragraph and list inside it.
++    if (isBlockContainer(node)) {
++      const childBlocks = convertASTToAppFlowyBlocks(
++        node.children as SupportedHastNode[],
++        options,
++        depth + 1
++      );
++
++      blocks.push(...childBlocks);
++      continue;
++    }
+ 
+     const block = elementToBlock(node);
+ 
+@@ -103,7 +133,11 @@ function convertASTToAppFlowyBlocks(nodes: HastElement[], options: HTMLParseOpti
+     } else {
+       // If element couldn't be converted, try processing its children
+       if (node.children && node.children.length > 0) {
+-        const childBlocks = convertASTToAppFlowyBlocks(node.children as HastElement[], options, depth + 1);
++        const childBlocks = convertASTToAppFlowyBlocks(
++          node.children as SupportedHastNode[],
++          options,
++          depth + 1
++        );
+ 
+         blocks.push(...childBlocks);
+       }
+@@ -113,6 +147,36 @@ function convertASTToAppFlowyBlocks(nodes: HastElement[], options: HTMLParseOpti
+   return blocks;
+ }
+ 
++const BLOCK_TAGS = new Set([
++  'blockquote',
++  'div',
++  'h1',
++  'h2',
++  'h3',
++  'h4',
++  'h5',
++  'h6',
++  'hr',
++  'ol',
++  'p',
++  'pre',
++  'table',
++  'ul',
++]);
++
++/**
++ * A div with direct block children is structural clipboard markup, not a
++ * paragraph. Inline-only divs still become normal paragraph blocks.
++ */
++function isBlockContainer(node: HastElement): boolean {
++  return (
++    node.tagName === 'div' &&
++    node.children.some(
++      (child) => child.type === 'element' && BLOCK_TAGS.has(child.tagName)
++    )
++  );
++}
++
+ /**
+  * Checks if HTML content contains only images
+  * Useful for special handling of image-only pastes
+diff --git a/src/components/editor/parsers/inline-converters.ts b/src/components/editor/parsers/inline-converters.ts
+index d5d98b9..4361fc7 100644
+--- a/src/components/editor/parsers/inline-converters.ts
++++ b/src/components/editor/parsers/inline-converters.ts
+@@ -55,6 +55,13 @@ export function extractInlineFormatsFromHAST(node: HastElement, baseOffset = 0):
+       const elem = n;
+       const newFormats = new Set(parentFormats);
+ 
++      // A line break contributes one character to the extracted text. Keeping
++      // the offset in sync here prevents formatting after <br> from shifting.
++      if (elem.tagName === 'br') {
++        currentOffset += 1;
++        return '\n';
++      }
++
+       // Check inline styles for formatting
+       const style = elem.properties?.style as string;
+ 
+@@ -193,6 +200,10 @@ export function extractTextFromHAST(node: HastElement | HastText): string {
+   }
+ 
+   if (node.type === 'element') {
++    if (node.tagName === 'br') {
++      return '\n';
++    }
++
+     return node.children.map((child) => extractTextFromHAST(child as HastElement | HastText)).join('');
+   }
+ 
