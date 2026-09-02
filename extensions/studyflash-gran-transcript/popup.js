@@ -138,6 +138,21 @@ async function getConnection() {
   return { ...studyflashConnection, parentViewId: destination.value || studyflashConnection.parentViewId };
 }
 
+// A content script registered in the manifest only starts automatically on a
+// new navigation.  If the user reloads the extension while a Gran lesson is
+// already open, Chrome has no receiver in that tab yet.  Recover in place so
+// the user never has to refresh the lesson just to import it.
+async function sendGranMessage(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    const details = error?.message || String(error);
+    if (!/receiving end does not exist|could not establish connection/i.test(details)) throw error;
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
 async function sendToStudyFlash() {
   transferButton.disabled = true;
   setStatus('Coletando os materiais disponíveis da aula… isso pode levar alguns minutos.');
@@ -149,7 +164,7 @@ async function sendToStudyFlash() {
     );
     if (!confirmed) return;
 
-    const result = await chrome.tabs.sendMessage(tab.id, { type: 'COLLECT_LESSON_PACKAGE' });
+    const result = await sendGranMessage(tab.id, { type: 'COLLECT_LESSON_PACKAGE' });
     if (!result?.ok) throw new Error(result?.error || 'Não consegui coletar os materiais da aula.');
     const connection = await getConnection();
     const response = await api(`/api/review/${connection.workspaceId}/lesson-import`, connection.token, {
@@ -176,7 +191,7 @@ async function extractToText({ button, messageType, allowedUrl, filenameSuffix, 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !allowedUrl.test(tab.url || '')) throw new Error('Abra a página correta do Gran antes de usar esta opção.');
-    const result = await chrome.tabs.sendMessage(tab.id, { type: messageType });
+    const result = await sendGranMessage(tab.id, { type: messageType });
     if (!result?.ok) throw new Error(result?.error || 'Não foi possível extrair o conteúdo.');
     const blobUrl = URL.createObjectURL(new Blob([result.text], { type: 'text/plain;charset=utf-8' }));
     await chrome.downloads.download({ url: blobUrl, filename: `studyflash/gran/${safeFilename(result.title)}-${filenameSuffix}.txt`, saveAs: true });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "StudyFlash · Importador Gran",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Coleta materiais visíveis de uma aula do Gran e os transfere para o StudyFlash.",
   "permissions": ["activeTab", "downloads", "scripting", "storage"],
   "host_permissions": [
