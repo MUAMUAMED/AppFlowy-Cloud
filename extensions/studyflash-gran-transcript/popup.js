@@ -188,10 +188,11 @@ async function sendToStudyFlash() {
     const importedPageUrl = `${STUDYFLASH_ORIGIN}/app/${connection.workspaceId}/${response.view_id}`;
     await chrome.tabs.create({ url: importedPageUrl, active: true });
     const skipped = result.package.skipped_materials || [];
+    const materialPages = response.material_pages || 0;
     if (skipped.length) {
-      setStatus(`Importação concluída dentro de “${destinationName}”. ${response.imported_cards} flashcard(s) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. A aula foi aberta em uma nova aba.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. A aula possui ${materialPages} página(s) filha(s); ${response.imported_cards} cartão(ões) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. A aula foi aberta em uma nova aba.`);
     } else {
-      setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula foi criada e ${response.imported_cards} flashcard(s) foram adicionados à Revisão. A aula foi aberta em uma nova aba.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula possui ${materialPages} página(s) filha(s) e ${response.imported_cards} cartão(ões) no formato nativo da Revisão. A aula foi aberta em uma nova aba.`);
     }
   } catch (error) {
     setStatus(error.message || 'Não foi possível transferir a revisão.', true);

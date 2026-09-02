@@ -191,6 +191,7 @@ struct LessonImportRequest {
 struct LessonImportResponse {
   view_id: Uuid,
   imported_cards: usize,
+  material_pages: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,6 +578,28 @@ async fn import_lesson_handler(
   )
   .await?;
 
+  // Textual learning materials are real child pages of the lesson.  This
+  // mirrors the normal StudyFlash/AppFlowy hierarchy: Topic -> Lesson ->
+  // Summary, Transcript, and so on. Questions and flashcards deliberately do
+  // not become copied text here; they are represented by their native Review
+  // card formats below.
+  let mut material_pages = 0;
+  for (name, data) in lesson_material_pages(&request) {
+    create_page(
+      &state,
+      user.clone(),
+      workspace_id,
+      &page.view_id,
+      &ViewLayout::Document,
+      Some(name),
+      Some(&data),
+      None,
+      None,
+    )
+    .await?;
+    material_pages += 1;
+  }
+
   // The document now exists. Tie every imported card to it so Review can open
   // the lesson again through the existing "Rever conteúdo" flow.
   for card in &mut request.cards {
@@ -638,6 +661,7 @@ async fn import_lesson_handler(
       .with_data(LessonImportResponse {
         view_id: page.view_id,
         imported_cards: request.cards.len(),
+        material_pages,
       })
       .into(),
   )
@@ -707,52 +731,47 @@ fn lesson_page_data(request: &LessonImportRequest) -> Value {
   if !request.topic.trim().is_empty() {
     push_document_text(&mut children, &format!("Tópico: {}", request.topic.trim()));
   }
-  if !request.summary.trim().is_empty() {
-    push_document_heading(&mut children, "RESUMO");
-    push_document_text(&mut children, &request.summary);
-  }
-  if !request.pocket_review.trim().is_empty() {
-    push_document_heading(&mut children, "REVISÃO DE BOLSO");
-    push_document_text(&mut children, &request.pocket_review);
-  }
-  if !request.transcript.trim().is_empty() {
-    push_document_heading(&mut children, "TRANSCRIÇÃO");
-    push_document_text(&mut children, &request.transcript);
-  }
-  if !request.questions.is_empty() {
-    push_document_heading(&mut children, "QUESTÕES");
-    for (index, question) in request.questions.iter().enumerate() {
-      push_document_text(&mut children, &format_imported_question(index + 1, question));
-    }
-  }
-  if !request.mind_maps.is_empty() {
-    push_document_heading(&mut children, "MAPAS MENTAIS");
-    for map in &request.mind_maps {
-      push_document_text(&mut children, map);
-      children.push(serde_json::json!({
-        "type": "image",
-        "data": { "url": map, "align": "center", "image_type": 1 }
-      }));
-    }
-  }
+  push_document_text(&mut children, "Os resumos, a transcrição e os mapas mentais estão organizados em páginas filhas desta aula.");
   if !request.cards.is_empty() {
-    push_document_heading(&mut children, "FLASHCARDS");
-    for (index, card) in request.cards.iter().enumerate() {
-      push_document_text(
-        &mut children,
-        &format!("Flashcard {}\nFrente: {}\nVerso: {}", index + 1, card.front, card.back),
-      );
-    }
-    push_document_text(
-      &mut children,
-      &format!("{} flashcard(s) foram vinculados a esta página e à Revisão.", request.cards.len()),
-    );
+    push_document_text(&mut children, &format!("{} cartão(ões), incluindo questões quando disponíveis, foram criados no formato nativo da Revisão e vinculados a esta aula.", request.cards.len()));
   }
   if !request.skipped_materials.is_empty() {
     push_document_heading(&mut children, "MATERIAIS NÃO DISPONÍVEIS NESTA IMPORTAÇÃO");
     push_document_text(&mut children, &request.skipped_materials.join("\n"));
   }
 
+  serde_json::json!({ "type": "page", "children": children })
+}
+
+/// Builds the documents nested directly below the imported lesson. Empty
+/// materials do not produce blank pages.
+fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(&'static str, Value)> {
+  let mut pages = Vec::new();
+  if !request.summary.trim().is_empty() {
+    pages.push(("Resumo", document_text_data(&request.summary)));
+  }
+  if !request.pocket_review.trim().is_empty() {
+    pages.push(("Revisão de bolso", document_text_data(&request.pocket_review)));
+  }
+  if !request.transcript.trim().is_empty() {
+    pages.push(("Transcrição", document_text_data(&request.transcript)));
+  }
+  if !request.mind_maps.is_empty() {
+    let mut children = Vec::new();
+    for map in &request.mind_maps {
+      children.push(serde_json::json!({
+        "type": "image",
+        "data": { "url": map, "align": "center", "image_type": 1 }
+      }));
+    }
+    pages.push(("Mapas mentais", serde_json::json!({ "type": "page", "children": children })));
+  }
+  pages
+}
+
+fn document_text_data(text: &str) -> Value {
+  let mut children = Vec::new();
+  push_document_text(&mut children, text);
   serde_json::json!({ "type": "page", "children": children })
 }
 
@@ -786,41 +805,6 @@ fn numbered_list_item(line: &str) -> Option<&str> {
     return None;
   }
   line.get(number_end + 1..).map(str::trim).filter(|item| !item.is_empty())
-}
-
-fn format_imported_question(index: usize, question: &Value) -> String {
-  let statement = question
-    .get("statement")
-    .and_then(Value::as_str)
-    .unwrap_or_default();
-  let correct = question
-    .get("correct")
-    .and_then(Value::as_str)
-    .unwrap_or_default();
-  let mut output = format!("Questão {}\n{}", index, statement);
-  if !correct.is_empty() {
-    output.push_str(&format!("\nGabarito: {}", correct));
-  }
-  if let Some(alternatives) = question.get("alternatives").and_then(Value::as_array) {
-    for alternative in alternatives {
-      let letter = alternative.get("letter").and_then(Value::as_str).unwrap_or("?");
-      let text = alternative.get("text").and_then(Value::as_str).unwrap_or_default();
-      let explanation = alternative
-        .get("explanation")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-      let label = if alternative.get("correct").and_then(Value::as_bool).unwrap_or(false) {
-        "Correta"
-      } else {
-        "Incorreta"
-      };
-      output.push_str(&format!("\n{} — {}: {}", letter, label, text));
-      if !explanation.is_empty() {
-        output.push_str(&format!("\nExplicação: {}", explanation));
-      }
-    }
-  }
-  output
 }
 
 async fn insert_card(
@@ -1697,7 +1681,7 @@ async fn maybe_award_completion(
 #[cfg(test)]
 mod tests {
   use super::{
-    calculate_interval, calculate_review_xp, format_imported_question, lesson_page_data,
+    calculate_interval, calculate_review_xp, lesson_material_pages, lesson_page_data,
     numbered_list_item, push_document_text, CreateCardRequest, LessonImportRequest,
   };
   use serde_json::json;
@@ -1737,26 +1721,6 @@ mod tests {
   }
 
   #[test]
-  fn imported_questions_keep_answer_and_explanations_readable() {
-    let text = format_imported_question(
-      2,
-      &json!({
-        "statement": "Qual alternativa está correta?",
-        "correct": "B",
-        "alternatives": [
-          { "letter": "A", "text": "Primeira", "correct": false, "explanation": "Não atende à regra." },
-          { "letter": "B", "text": "Segunda", "correct": true, "explanation": "Atende à regra." }
-        ]
-      }),
-    );
-    assert!(text.contains("Questão 2"));
-    assert!(text.contains("Gabarito: B"));
-    assert!(text.contains("A — Incorreta: Primeira"));
-    assert!(text.contains("B — Correta: Segunda"));
-    assert!(text.contains("Explicação: Atende à regra."));
-  }
-
-  #[test]
   fn imported_text_preserves_simple_lists_as_editor_blocks() {
     let mut children = Vec::new();
     push_document_text(&mut children, "Introdução\n- ponto importante\n2. segunda etapa");
@@ -1768,7 +1732,7 @@ mod tests {
   }
 
   #[test]
-  fn full_lesson_package_creates_every_study_section() {
+  fn full_lesson_package_uses_child_pages_and_native_review_cards() {
     let request = LessonImportRequest {
       parent_view_id: Uuid::new_v4(),
       title: "Morfologia III".to_string(),
@@ -1807,26 +1771,19 @@ mod tests {
       timezone_offset_minutes: 0,
     };
 
-    let data = lesson_page_data(&request);
-    let children = data["children"].as_array().expect("page children");
-    let headings: Vec<&str> = children
-      .iter()
-      .filter(|block| block["type"] == "heading")
-      .filter_map(|block| block["data"]["delta"][0]["insert"].as_str())
-      .collect();
-    assert_eq!(
-      headings,
-      vec![
-        "RESUMO",
-        "REVISÃO DE BOLSO",
-        "TRANSCRIÇÃO",
-        "QUESTÕES",
-        "MAPAS MENTAIS",
-        "FLASHCARDS",
-        "MATERIAIS NÃO DISPONÍVEIS NESTA IMPORTAÇÃO",
-      ],
-    );
-    assert!(children.iter().any(|block| block["type"] == "image" && block["data"]["url"] == "https://cdn.example.com/mapa.png"));
-    assert!(children.iter().any(|block| block["data"]["delta"][0]["insert"] == "1 flashcard(s) foram vinculados a esta página e à Revisão."));
+    let materials = lesson_material_pages(&request);
+    assert_eq!(materials.len(), 4);
+    assert_eq!(materials[0].0, "Resumo");
+    assert_eq!(materials[1].0, "Revisão de bolso");
+    assert_eq!(materials[2].0, "Transcrição");
+    assert_eq!(materials[3].0, "Mapas mentais");
+    assert_eq!(materials[3].1["children"][0]["type"], "image");
+
+    let lesson = lesson_page_data(&request);
+    let lesson_text = lesson["children"].to_string();
+    assert!(lesson_text.contains("páginas filhas"));
+    assert!(lesson_text.contains("formato nativo da Revisão"));
+    assert!(!lesson_text.contains("Questão 1"));
+    assert!(!lesson_text.contains("Frente: Frente"));
   }
 }
