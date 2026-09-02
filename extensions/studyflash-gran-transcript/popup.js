@@ -135,7 +135,13 @@ async function connectStudyFlash() {
 async function getConnection() {
   const { studyflashConnection } = await chrome.storage.session.get('studyflashConnection');
   if (!studyflashConnection?.token || !studyflashConnection?.workspaceId) throw new Error('Conecte ao StudyFlash primeiro.');
-  return { ...studyflashConnection, parentViewId: destination.value || studyflashConnection.parentViewId };
+  const parentViewId = destination.value || studyflashConnection.parentViewId;
+  if (!parentViewId) throw new Error('Escolha onde a aula deve ser criada antes de transferir.');
+  return { ...studyflashConnection, parentViewId };
+}
+
+function selectedDestinationName() {
+  return destination.selectedOptions[0]?.textContent?.replace(/^—\s*/u, '').trim() || 'a página selecionada';
 }
 
 // A content script registered in the manifest only starts automatically on a
@@ -155,10 +161,15 @@ async function sendGranMessage(tabId, message) {
 
 async function sendToStudyFlash() {
   transferButton.disabled = true;
-  setStatus('Coletando os materiais disponíveis da aula… isso pode levar alguns minutos.');
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !GRAN_LESSON_URL.test(tab.url || '')) throw new Error('Abra uma aula do Gran antes de transferir.');
+    // Resolve the destination before doing the slow collection. This prevents
+    // a complete package from being gathered only to discover that the user
+    // was not connected or had not selected a subject/topic yet.
+    const connection = await getConnection();
+    const destinationName = selectedDestinationName();
+    setStatus(`A aula será criada dentro de “${destinationName}”. Coletando os materiais disponíveis… isso pode levar alguns minutos.`);
     const confirmed = window.confirm(
       'Para capturar gabaritos e explicações, a extensão marcará a alternativa A em cada questão. Isso será registrado no Gran. Deseja transferir a revisão completa?',
     );
@@ -166,7 +177,6 @@ async function sendToStudyFlash() {
 
     const result = await sendGranMessage(tab.id, { type: 'COLLECT_LESSON_PACKAGE' });
     if (!result?.ok) throw new Error(result?.error || 'Não consegui coletar os materiais da aula.');
-    const connection = await getConnection();
     const response = await api(`/api/review/${connection.workspaceId}/lesson-import`, connection.token, {
       method: 'POST',
       body: JSON.stringify({ ...result.package, parent_view_id: connection.parentViewId }),
@@ -174,9 +184,9 @@ async function sendToStudyFlash() {
     await chrome.storage.session.set({ studyflashConnection: connection });
     const skipped = result.package.skipped_materials || [];
     if (skipped.length) {
-      setStatus(`Importação concluída com ${skipped.length} material(is) não disponível(is): ${skipped.map((item) => item.split(':')[0]).join(', ')}. Página criada e ${response.imported_cards} flashcard(s) adicionados.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. ${response.imported_cards} flashcard(s) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. Atualize o StudyFlash para ver a nova aula.`);
     } else {
-      setStatus(`Importação concluída: página criada e ${response.imported_cards} flashcard(s) adicionados à Revisão.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula foi criada e ${response.imported_cards} flashcard(s) foram adicionados à Revisão. Atualize o StudyFlash para vê-la.`);
     }
   } catch (error) {
     setStatus(error.message || 'Não foi possível transferir a revisão.', true);
