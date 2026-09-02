@@ -102,10 +102,7 @@ async function extractTranscript() {
 
   if (text.length < 80) throw new Error('A transcrição retornou vazia.');
 
-  const closeButton = [...dialog.querySelectorAll('button')].find(
-    (button) => normalize(button.getAttribute('aria-label') || button.innerText) === 'Fechar',
-  );
-  closeButton?.click();
+  await closeArtifactOverlay(dialog);
 
   return { text, title: lessonTitle, transcript: text };
 }
@@ -294,12 +291,17 @@ function getFlashcardsPanel() {
   );
 }
 
-function closeArtifactOverlay(panel) {
+async function closeArtifactOverlay(panel) {
   const closeButton = [...(panel?.querySelectorAll('button') || [])].find((button) => {
     const label = normalize(`${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`);
     return /^(fechar|voltar para a aula)$/i.test(label);
   });
-  closeButton?.click();
+  if (!closeButton) return;
+  closeButton.click();
+  // Wait for Gran to unmount its overlay before selecting the next artifact.
+  // Its controls may otherwise still be visible in the DOM but blocked by the
+  // transition layer.
+  await new Promise((resolve) => setTimeout(resolve, 150));
 }
 
 async function ensureFlashcardsPanel() {
@@ -363,7 +365,7 @@ async function extractFlashcards() {
   // The complete importer continues with exercises and mind maps. Close this
   // overlay first; otherwise the Gran UI can leave the next artifact button
   // inaccessible behind the flashcard player.
-  closeArtifactOverlay(panel);
+  await closeArtifactOverlay(panel);
   return { text: `${text}\n`, title: lessonTitle, cards };
 }
 
@@ -403,10 +405,7 @@ async function extractTextArtifact(names) {
     await new Promise((resolve) => setTimeout(resolve, 300));
     return artifactPanelText(panel);
   } finally {
-    const panel = getArtifactPanel(names);
-    [...(panel?.querySelectorAll('button') || [])]
-      .find((candidate) => /^(fechar|voltar para a aula)$/i.test(normalize(candidate.getAttribute('aria-label') || candidate.innerText)))
-      ?.click();
+    await closeArtifactOverlay(getArtifactPanel(names));
   }
 }
 
@@ -422,10 +421,7 @@ async function extractMindMaps() {
       .map((image) => image.currentSrc || image.src)
       .filter((source) => /^https?:\/\//.test(source));
   } finally {
-    const panel = getArtifactPanel(names);
-    [...(panel?.querySelectorAll('button') || [])]
-      .find((candidate) => /^(fechar|voltar para a aula)$/i.test(normalize(candidate.getAttribute('aria-label') || candidate.innerText)))
-      ?.click();
+    await closeArtifactOverlay(getArtifactPanel(names));
   }
 }
 
@@ -754,7 +750,7 @@ async function answerAndExtractFixationWithExplanations() {
   ])].join('\n');
   // Do not leave the exercise modal covering the controls used by the next
   // collection step (for example, the mental-map artifact).
-  closeArtifactOverlay(dialog);
+  await closeArtifactOverlay(dialog);
   return { text: `${text}\n`, title: lessonTitle, questions: collected };
 }
 
