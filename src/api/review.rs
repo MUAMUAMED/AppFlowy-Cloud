@@ -1,4 +1,7 @@
-use actix_web::{web, Scope};
+use actix_web::{web, HttpRequest, Scope};
+use crate::api::util::realtime_user_for_web_request;
+use crate::biz::workspace::page_view::create_page;
+use shared_entity::dto::workspace_dto::ViewLayout;
 use app_error::AppError;
 use chrono::{DateTime, Days, Duration, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,6 +42,11 @@ pub fn review_scope() -> Scope {
     .service(
       web::resource("/{workspace_id}/cards/import")
         .route(web::post().to(import_cards_handler)),
+    )
+    .service(
+      web::resource("/{workspace_id}/lesson-import")
+        .app_data(web::PayloadConfig::new(5 * 1024 * 1024))
+        .route(web::post().to(import_lesson_handler)),
     )
     .service(
       web::resource("/{workspace_id}/cards/{card_id}")
@@ -144,6 +152,45 @@ struct CreateCardRequest {
 #[derive(Debug, Deserialize)]
 struct ImportCardsRequest {
   cards: Vec<CreateCardRequest>,
+}
+
+/// A complete lesson package emitted by the StudyFlash Gran extension.
+/// The parent view is deliberately explicit: a caller can import straight into
+/// any subject or topic page without relying on a fragile title match.
+#[derive(Debug, Deserialize)]
+struct LessonImportRequest {
+  parent_view_id: Uuid,
+  title: String,
+  source_url: String,
+  #[serde(default)]
+  discipline: String,
+  #[serde(default)]
+  topic: String,
+  #[serde(default)]
+  transcript: String,
+  #[serde(default)]
+  summary: String,
+  #[serde(default)]
+  pocket_review: String,
+  #[serde(default)]
+  questions: Vec<Value>,
+  #[serde(default)]
+  mind_maps: Vec<String>,
+  #[serde(default)]
+  skipped_materials: Vec<String>,
+  #[serde(default)]
+  cards: Vec<CreateCardRequest>,
+  subject_id: Option<Uuid>,
+  topic_id: Option<Uuid>,
+  content_id: Option<Uuid>,
+  #[serde(default)]
+  timezone_offset_minutes: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct LessonImportResponse {
+  view_id: Uuid,
+  imported_cards: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,6 +524,303 @@ async fn import_cards_handler(
     cards.push(load_card(&state.pg_pool, workspace_id, uid, card_id).await?);
   }
   Ok(AppResponse::Ok().with_data(cards).into())
+}
+
+async fn import_lesson_handler(
+  user_uuid: UserUuid,
+  path: web::Path<Uuid>,
+  payload: web::Json<LessonImportRequest>,
+  state: web::Data<AppState>,
+  req: HttpRequest,
+) -> ReviewResult<JsonAppResponse<LessonImportResponse>> {
+  let workspace_id = path.into_inner();
+  let uid = workspace_uid(&state.pg_pool, &state, &user_uuid, workspace_id).await?;
+  let mut request = payload.into_inner();
+  let title = request.title.trim().to_owned();
+  if title.is_empty() || title.len() > 500 {
+    return Err(AppError::InvalidRequest("lesson title must contain 1 to 500 characters".to_string()));
+  }
+  if request.source_url.trim().is_empty() || request.source_url.len() > 4_000 {
+    return Err(AppError::InvalidRequest("a valid lesson source URL is required".to_string()));
+  }
+  if request.cards.len() > 200 {
+    return Err(AppError::InvalidRequest("a lesson import is limited to 200 flashcards".to_string()));
+  }
+
+  let resolved_taxonomy = resolve_source_taxonomy(&state.pg_pool, workspace_id, request.parent_view_id).await?;
+  let subject_id = request.subject_id.or(resolved_taxonomy.subject_id);
+  let mut topic_id = request.topic_id.or(resolved_taxonomy.topic_id);
+  let mut content_id = request.content_id.or(resolved_taxonomy.content_id);
+
+  // Validate the entire package before creating its document. This prevents an
+  // invalid card from leaving an otherwise empty imported lesson behind.
+  for card in &mut request.cards {
+    card.subject_id = subject_id;
+    card.topic_id = topic_id;
+    card.content_id = content_id;
+    card.timezone_offset_minutes = request.timezone_offset_minutes;
+    validate_card(&state.pg_pool, workspace_id, card).await?;
+  }
+
+  let user = realtime_user_for_web_request(req.headers(), uid)?;
+  let page_data = lesson_page_data(&request);
+  let page = create_page(
+    &state,
+    user,
+    workspace_id,
+    &request.parent_view_id,
+    &ViewLayout::Document,
+    Some(&title),
+    Some(&page_data),
+    None,
+    None,
+  )
+  .await?;
+
+  // The document now exists. Tie every imported card to it so Review can open
+  // the lesson again through the existing "Rever conteúdo" flow.
+  for card in &mut request.cards {
+    card.source_view_id = Some(page.view_id);
+    card.source_block_id = None;
+  }
+
+  // An imported lesson is itself a topic when placed in a subject and content
+  // when placed in a topic. This keeps the page tree and Review taxonomy in
+  // lockstep without requiring a separate classification action afterwards.
+  let needs_taxonomy = (subject_id.is_some() && topic_id.is_none())
+    || (topic_id.is_some() && content_id.is_none());
+  if !request.cards.is_empty() || needs_taxonomy {
+    let mut tx = state.pg_pool.begin().await?;
+    let taxonomy_name: String = title.chars().take(200).collect();
+    if topic_id.is_some() && content_id.is_none() {
+      content_id = Some(
+        upsert_page_taxonomy(
+          &mut tx,
+          workspace_id,
+          uid,
+          topic_id,
+          "content",
+          page.view_id,
+          &taxonomy_name,
+        )
+        .await?,
+      );
+    } else if subject_id.is_some() && topic_id.is_none() {
+      topic_id = Some(
+        upsert_page_taxonomy(
+          &mut tx,
+          workspace_id,
+          uid,
+          subject_id,
+          "topic",
+          page.view_id,
+          &taxonomy_name,
+        )
+        .await?,
+      );
+    }
+    for card in &request.cards {
+      let mut card = card.clone();
+      card.subject_id = subject_id;
+      card.topic_id = topic_id;
+      card.content_id = content_id;
+      let window = review_window(card.timezone_offset_minutes)?;
+      insert_card(&mut tx, workspace_id, uid, &card, &window).await?;
+    }
+    if !request.cards.is_empty() {
+      let window = review_window(request.timezone_offset_minutes)?;
+      ensure_profile(&mut tx, workspace_id, uid, window.date).await?;
+    }
+    tx.commit().await?;
+  }
+  Ok(
+    AppResponse::Ok()
+      .with_data(LessonImportResponse {
+        view_id: page.view_id,
+        imported_cards: request.cards.len(),
+      })
+      .into(),
+  )
+}
+
+#[derive(Default)]
+struct SourceTaxonomy {
+  subject_id: Option<Uuid>,
+  topic_id: Option<Uuid>,
+  content_id: Option<Uuid>,
+}
+
+/// Maps the destination page selected in the extension back to the StudyFlash
+/// taxonomy.  A lesson imported into a subject, topic, or content page therefore
+/// becomes available in exactly the same area of Review without asking the user
+/// to classify it a second time.
+async fn resolve_source_taxonomy(
+  pool: &PgPool,
+  workspace_id: Uuid,
+  source_view_id: Uuid,
+) -> Result<SourceTaxonomy, AppError> {
+  let row = sqlx::query(
+    "SELECT taxonomy_id, parent_id, kind FROM af_review_taxonomy WHERE workspace_id = $1 AND source_view_id = $2",
+  )
+  .bind(workspace_id)
+  .bind(source_view_id)
+  .fetch_optional(pool)
+  .await?;
+  let Some(row) = row else { return Ok(SourceTaxonomy::default()); };
+
+  let taxonomy_id: Uuid = row.get("taxonomy_id");
+  let parent_id: Option<Uuid> = row.get("parent_id");
+  let kind: String = row.get("kind");
+  match kind.as_str() {
+    "subject" => Ok(SourceTaxonomy { subject_id: Some(taxonomy_id), ..Default::default() }),
+    "topic" => Ok(SourceTaxonomy {
+      subject_id: parent_id,
+      topic_id: Some(taxonomy_id),
+      ..Default::default()
+    }),
+    "content" => {
+      let topic_id = parent_id;
+      let subject_id = if let Some(topic_id) = topic_id {
+        sqlx::query_scalar(
+          "SELECT parent_id FROM af_review_taxonomy WHERE workspace_id = $1 AND taxonomy_id = $2 AND kind = 'topic'",
+        )
+        .bind(workspace_id)
+        .bind(topic_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten()
+      } else {
+        None
+      };
+      Ok(SourceTaxonomy { subject_id, topic_id, content_id: Some(taxonomy_id) })
+    },
+    _ => Ok(SourceTaxonomy::default()),
+  }
+}
+
+fn lesson_page_data(request: &LessonImportRequest) -> Value {
+  let mut children = Vec::new();
+  push_document_text(&mut children, &format!("Aula importada do Gran\nOrigem: {}", request.source_url));
+  if !request.discipline.trim().is_empty() {
+    push_document_text(&mut children, &format!("Matéria: {}", request.discipline.trim()));
+  }
+  if !request.topic.trim().is_empty() {
+    push_document_text(&mut children, &format!("Tópico: {}", request.topic.trim()));
+  }
+  if !request.summary.trim().is_empty() {
+    push_document_heading(&mut children, "RESUMO");
+    push_document_text(&mut children, &request.summary);
+  }
+  if !request.pocket_review.trim().is_empty() {
+    push_document_heading(&mut children, "REVISÃO DE BOLSO");
+    push_document_text(&mut children, &request.pocket_review);
+  }
+  if !request.transcript.trim().is_empty() {
+    push_document_heading(&mut children, "TRANSCRIÇÃO");
+    push_document_text(&mut children, &request.transcript);
+  }
+  if !request.questions.is_empty() {
+    push_document_heading(&mut children, "QUESTÕES");
+    for (index, question) in request.questions.iter().enumerate() {
+      push_document_text(&mut children, &format_imported_question(index + 1, question));
+    }
+  }
+  if !request.mind_maps.is_empty() {
+    push_document_heading(&mut children, "MAPAS MENTAIS");
+    for map in &request.mind_maps {
+      push_document_text(&mut children, map);
+      children.push(serde_json::json!({
+        "type": "image",
+        "data": { "url": map, "align": "center", "image_type": 1 }
+      }));
+    }
+  }
+  if !request.cards.is_empty() {
+    push_document_heading(&mut children, "FLASHCARDS");
+    for (index, card) in request.cards.iter().enumerate() {
+      push_document_text(
+        &mut children,
+        &format!("Flashcard {}\nFrente: {}\nVerso: {}", index + 1, card.front, card.back),
+      );
+    }
+    push_document_text(
+      &mut children,
+      &format!("{} flashcard(s) foram vinculados a esta página e à Revisão.", request.cards.len()),
+    );
+  }
+  if !request.skipped_materials.is_empty() {
+    push_document_heading(&mut children, "MATERIAIS NÃO DISPONÍVEIS NESTA IMPORTAÇÃO");
+    push_document_text(&mut children, &request.skipped_materials.join("\n"));
+  }
+
+  serde_json::json!({ "type": "page", "children": children })
+}
+
+fn push_document_heading(children: &mut Vec<Value>, text: &str) {
+  children.push(serde_json::json!({
+    "type": "heading",
+    "data": { "level": 2, "delta": [{ "insert": text }] }
+  }));
+}
+
+fn push_document_text(children: &mut Vec<Value>, text: &str) {
+  for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    let (block_type, line) = if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("• ")) {
+      ("bulleted_list", item)
+    } else if let Some(item) = numbered_list_item(line) {
+      ("numbered_list", item)
+    } else {
+      ("paragraph", line)
+    };
+    children.push(serde_json::json!({
+      "type": block_type,
+      "data": { "delta": [{ "insert": line }] }
+    }));
+  }
+}
+
+fn numbered_list_item(line: &str) -> Option<&str> {
+  let number_end = line.find(|character: char| !character.is_ascii_digit())?;
+  let separator = *line.as_bytes().get(number_end)?;
+  if number_end == 0 || !matches!(separator, b'.' | b')') {
+    return None;
+  }
+  line.get(number_end + 1..).map(str::trim).filter(|item| !item.is_empty())
+}
+
+fn format_imported_question(index: usize, question: &Value) -> String {
+  let statement = question
+    .get("statement")
+    .and_then(Value::as_str)
+    .unwrap_or_default();
+  let correct = question
+    .get("correct")
+    .and_then(Value::as_str)
+    .unwrap_or_default();
+  let mut output = format!("Questão {}\n{}", index, statement);
+  if !correct.is_empty() {
+    output.push_str(&format!("\nGabarito: {}", correct));
+  }
+  if let Some(alternatives) = question.get("alternatives").and_then(Value::as_array) {
+    for alternative in alternatives {
+      let letter = alternative.get("letter").and_then(Value::as_str).unwrap_or("?");
+      let text = alternative.get("text").and_then(Value::as_str).unwrap_or_default();
+      let explanation = alternative
+        .get("explanation")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+      let label = if alternative.get("correct").and_then(Value::as_bool).unwrap_or(false) {
+        "Correta"
+      } else {
+        "Incorreta"
+      };
+      output.push_str(&format!("\n{} — {}: {}", letter, label, text));
+      if !explanation.is_empty() {
+        output.push_str(&format!("\nExplicação: {}", explanation));
+      }
+    }
+  }
+  output
 }
 
 async fn insert_card(
@@ -1352,7 +1696,8 @@ async fn maybe_award_completion(
 
 #[cfg(test)]
 mod tests {
-  use super::{calculate_interval, calculate_review_xp};
+  use super::{calculate_interval, calculate_review_xp, format_imported_question, numbered_list_item, push_document_text};
+  use serde_json::json;
 
   const DAY: i64 = 86_400;
 
@@ -1385,5 +1730,36 @@ mod tests {
     assert_eq!(calculate_review_xp(false, 1), 1);
     assert_eq!(calculate_review_xp(false, 2), 1);
     assert_eq!(calculate_review_xp(false, 3), 0);
+  }
+
+  #[test]
+  fn imported_questions_keep_answer_and_explanations_readable() {
+    let text = format_imported_question(
+      2,
+      &json!({
+        "statement": "Qual alternativa está correta?",
+        "correct": "B",
+        "alternatives": [
+          { "letter": "A", "text": "Primeira", "correct": false, "explanation": "Não atende à regra." },
+          { "letter": "B", "text": "Segunda", "correct": true, "explanation": "Atende à regra." }
+        ]
+      }),
+    );
+    assert!(text.contains("Questão 2"));
+    assert!(text.contains("Gabarito: B"));
+    assert!(text.contains("A — Incorreta: Primeira"));
+    assert!(text.contains("B — Correta: Segunda"));
+    assert!(text.contains("Explicação: Atende à regra."));
+  }
+
+  #[test]
+  fn imported_text_preserves_simple_lists_as_editor_blocks() {
+    let mut children = Vec::new();
+    push_document_text(&mut children, "Introdução\n- ponto importante\n2. segunda etapa");
+    assert_eq!(children[0]["type"], "paragraph");
+    assert_eq!(children[1]["type"], "bulleted_list");
+    assert_eq!(children[2]["type"], "numbered_list");
+    assert_eq!(numbered_list_item("3) exemplo"), Some("exemplo"));
+    assert_eq!(numbered_list_item("texto comum"), None);
   }
 }

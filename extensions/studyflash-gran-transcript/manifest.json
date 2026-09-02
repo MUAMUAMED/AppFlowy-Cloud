@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "StudyFlash · Importador Gran",
+  "version": "0.2.0",
+  "description": "Coleta materiais visíveis de uma aula do Gran e os transfere para o StudyFlash.",
+  "permissions": ["activeTab", "downloads", "scripting", "storage"],
+  "host_permissions": [
+    "https://grancursosonline.com.br/*",
+    "https://www.grancursosonline.com.br/*",
+    "https://questoes.grancursosonline.com.br/*",
+    "https://studyflash-revisao-6a5a42.zeabur.app/*"
+  ],
+  "action": {
+    "default_title": "StudyFlash: importar aula do Gran",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://grancursosonline.com.br/aluno/curso/video/*",
+        "https://www.grancursosonline.com.br/aluno/curso/video/*",
+        "https://questoes.grancursosonline.com.br/questoes-de-concursos/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
