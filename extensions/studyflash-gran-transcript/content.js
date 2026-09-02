@@ -294,6 +294,14 @@ function getFlashcardsPanel() {
   );
 }
 
+function closeArtifactOverlay(panel) {
+  const closeButton = [...(panel?.querySelectorAll('button') || [])].find((button) => {
+    const label = normalize(`${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`);
+    return /^(fechar|voltar para a aula)$/i.test(label);
+  });
+  closeButton?.click();
+}
+
 async function ensureFlashcardsPanel() {
   let panel = getFlashcardsPanel();
   if (!panel) {
@@ -352,6 +360,10 @@ async function extractFlashcards() {
   }
   const lessonTitle = normalize(document.querySelector('main h2')?.textContent) || 'aula-gran';
   const text = ['FLASHCARDS', `Aula: ${lessonTitle}`, `Origem: ${location.href}`, `Extraído em: ${new Date().toLocaleString('pt-BR')}`, '', ...cards.flatMap((card) => [`FLASHCARD ${card.current}`, `Frente: ${card.front}`, `Verso: ${card.back}`, ''])].join('\n');
+  // The complete importer continues with exercises and mind maps. Close this
+  // overlay first; otherwise the Gran UI can leave the next artifact button
+  // inaccessible behind the flashcard player.
+  closeArtifactOverlay(panel);
   return { text: `${text}\n`, title: lessonTitle, cards };
 }
 
@@ -740,6 +752,9 @@ async function answerAndExtractFixationWithExplanations() {
       '',
     ]),
   ])].join('\n');
+  // Do not leave the exercise modal covering the controls used by the next
+  // collection step (for example, the mental-map artifact).
+  closeArtifactOverlay(dialog);
   return { text: `${text}\n`, title: lessonTitle, questions: collected };
 }
 
