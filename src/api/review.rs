@@ -1696,8 +1696,12 @@ async fn maybe_award_completion(
 
 #[cfg(test)]
 mod tests {
-  use super::{calculate_interval, calculate_review_xp, format_imported_question, numbered_list_item, push_document_text};
+  use super::{
+    calculate_interval, calculate_review_xp, format_imported_question, lesson_page_data,
+    numbered_list_item, push_document_text, CreateCardRequest, LessonImportRequest,
+  };
   use serde_json::json;
+  use uuid::Uuid;
 
   const DAY: i64 = 86_400;
 
@@ -1761,5 +1765,68 @@ mod tests {
     assert_eq!(children[2]["type"], "numbered_list");
     assert_eq!(numbered_list_item("3) exemplo"), Some("exemplo"));
     assert_eq!(numbered_list_item("texto comum"), None);
+  }
+
+  #[test]
+  fn full_lesson_package_creates_every_study_section() {
+    let request = LessonImportRequest {
+      parent_view_id: Uuid::new_v4(),
+      title: "Morfologia III".to_string(),
+      source_url: "https://www.grancursosonline.com.br/aluno/curso/video/example".to_string(),
+      discipline: "Língua Portuguesa".to_string(),
+      topic: "Morfologia".to_string(),
+      transcript: "Texto da transcrição".to_string(),
+      summary: "Resumo da aula".to_string(),
+      pocket_review: "Revisão rápida".to_string(),
+      questions: vec![json!({
+        "statement": "Qual é a resposta?",
+        "correct": "A",
+        "alternatives": [{ "letter": "A", "text": "Certa", "correct": true, "explanation": "Porque está certa." }]
+      })],
+      mind_maps: vec!["https://cdn.example.com/mapa.png".to_string()],
+      skipped_materials: vec!["Resumo de bolso: não disponível nesta aula".to_string()],
+      cards: vec![CreateCardRequest {
+        card_type: "classic".to_string(),
+        front: "Frente".to_string(),
+        back: "Verso".to_string(),
+        explanation: String::new(),
+        choices: json!([]),
+        correct_answer: String::new(),
+        subject_id: None,
+        topic_id: None,
+        content_id: None,
+        tags: Vec::new(),
+        source_view_id: None,
+        source_block_id: None,
+        timezone_offset_minutes: 0,
+        initial_difficulty: None,
+      }],
+      subject_id: None,
+      topic_id: None,
+      content_id: None,
+      timezone_offset_minutes: 0,
+    };
+
+    let data = lesson_page_data(&request);
+    let children = data["children"].as_array().expect("page children");
+    let headings: Vec<&str> = children
+      .iter()
+      .filter(|block| block["type"] == "heading")
+      .filter_map(|block| block["data"]["delta"][0]["insert"].as_str())
+      .collect();
+    assert_eq!(
+      headings,
+      vec![
+        "RESUMO",
+        "REVISÃO DE BOLSO",
+        "TRANSCRIÇÃO",
+        "QUESTÕES",
+        "MAPAS MENTAIS",
+        "FLASHCARDS",
+        "MATERIAIS NÃO DISPONÍVEIS NESTA IMPORTAÇÃO",
+      ],
+    );
+    assert!(children.iter().any(|block| block["type"] == "image" && block["data"]["url"] == "https://cdn.example.com/mapa.png"));
+    assert!(children.iter().any(|block| block["data"]["delta"][0]["insert"] == "1 flashcard(s) foram vinculados a esta página e à Revisão."));
   }
 }
