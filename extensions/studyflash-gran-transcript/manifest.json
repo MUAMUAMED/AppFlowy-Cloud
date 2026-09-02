@@ -3,7 +3,7 @@
   "name": "StudyFlash · Importador Gran",
   "version": "0.3.0",
   "description": "Coleta materiais visíveis de uma aula do Gran e os transfere para o StudyFlash.",
-  "permissions": ["activeTab", "downloads", "scripting", "storage"],
+  "permissions": ["activeTab", "downloads", "scripting", "storage", "tabs"],
   "host_permissions": [
     "https://grancursosonline.com.br/*",
     "https://www.grancursosonline.com.br/*",

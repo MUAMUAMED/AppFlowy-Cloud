@@ -182,11 +182,16 @@ async function sendToStudyFlash() {
       body: JSON.stringify({ ...result.package, parent_view_id: connection.parentViewId }),
     });
     await chrome.storage.session.set({ studyflashConnection: connection });
+    // AppFlowy routes directly to a page as /app/{workspace}/{view}. Opening
+    // the response view immediately makes the import visible even when the
+    // sidebar tree is collapsed or waiting for its next refresh.
+    const importedPageUrl = `${STUDYFLASH_ORIGIN}/app/${connection.workspaceId}/${response.view_id}`;
+    await chrome.tabs.create({ url: importedPageUrl, active: true });
     const skipped = result.package.skipped_materials || [];
     if (skipped.length) {
-      setStatus(`Importação concluída dentro de “${destinationName}”. ${response.imported_cards} flashcard(s) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. Atualize o StudyFlash para ver a nova aula.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. ${response.imported_cards} flashcard(s) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. A aula foi aberta em uma nova aba.`);
     } else {
-      setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula foi criada e ${response.imported_cards} flashcard(s) foram adicionados à Revisão. Atualize o StudyFlash para vê-la.`);
+      setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula foi criada e ${response.imported_cards} flashcard(s) foram adicionados à Revisão. A aula foi aberta em uma nova aba.`);
     }
   } catch (error) {
     setStatus(error.message || 'Não foi possível transferir a revisão.', true);
