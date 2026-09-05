@@ -21,7 +21,7 @@ function findTranscriptMenuItem() {
   });
 }
 
-function waitFor(getElement, timeout = 8_000) {
+function waitFor(getElement, timeout = 8_000, timeoutMessage = 'O conteúdo demorou para abrir. Tente novamente.') {
   return new Promise((resolve, reject) => {
     const immediately = getElement();
     if (immediately) return resolve(immediately);
@@ -36,7 +36,7 @@ function waitFor(getElement, timeout = 8_000) {
 
     const timer = setTimeout(() => {
       observer.disconnect();
-      reject(new Error('A transcrição demorou para abrir. Tente novamente.'));
+      reject(new Error(timeoutMessage));
     }, timeout);
 
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
@@ -416,7 +416,11 @@ async function extractTextArtifact(names) {
   if (!button) throw new Error('não disponível nesta aula');
   button.click();
   try {
-    const panel = await waitFor(() => getArtifactPanel(names), 8_000);
+    const panel = await waitFor(
+      () => getArtifactPanel(names),
+      8_000,
+      `O material “${names[0]}” demorou para abrir. Tente novamente.`,
+    );
     await new Promise((resolve) => setTimeout(resolve, 300));
     return artifactPanelText(panel);
   } finally {
@@ -430,7 +434,11 @@ async function extractMindMaps() {
   if (!button) throw new Error('não disponível nesta aula');
   button.click();
   try {
-    const panel = await waitFor(() => getArtifactPanel(names), 8_000);
+    const panel = await waitFor(
+      () => getArtifactPanel(names),
+      8_000,
+      'O mapa mental demorou para abrir. Tente novamente.',
+    );
     await new Promise((resolve) => setTimeout(resolve, 300));
     return [...panel.querySelectorAll('img')]
       .map((image) => image.currentSrc || image.src)
