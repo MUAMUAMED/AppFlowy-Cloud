@@ -567,7 +567,7 @@ async fn import_lesson_handler(
   let page_data = lesson_page_data(&request);
   let page = create_page(
     &state,
-    user,
+    user.clone(),
     workspace_id,
     &request.parent_view_id,
     &ViewLayout::Document,
