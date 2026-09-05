@@ -1,4 +1,7 @@
-const normalize = (value = '') => value.replace(/\s+/g, ' ').trim();
+// Gran occasionally removes a node while an overlay is being rendered.  In
+// that short interval textContent/innerText can be null (not just undefined),
+// so always coerce before normalising it.
+const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 
 function findSummaryButton() {
   const explicitButton = document.querySelector('button[aria-label="Resumo e exercícios"]');
@@ -90,21 +93,25 @@ function transcriptToText(dialog, lessonTitle) {
 
 async function extractTranscript() {
   const lessonTitle = normalize(document.querySelector('main h2')?.textContent) || 'aula-gran';
-  const summaryButton = await waitFor(findSummaryButton, 8_000);
+  let dialog = null;
+  try {
+    const summaryButton = await waitFor(findSummaryButton, 8_000);
 
-  summaryButton.click();
-  const menuItem = await waitFor(findTranscriptMenuItem);
-  menuItem.click();
+    summaryButton.click();
+    const menuItem = await waitFor(findTranscriptMenuItem);
+    menuItem.click();
 
-  await waitFor(getTranscriptDialog, 12_000);
-  const dialog = await waitFor(getReadyTranscriptDialog, 30_000);
-  const text = transcriptToText(dialog, lessonTitle);
+    await waitFor(getTranscriptDialog, 12_000);
+    dialog = await waitFor(getReadyTranscriptDialog, 30_000);
+    const text = transcriptToText(dialog, lessonTitle);
 
-  if (text.length < 80) throw new Error('A transcrição retornou vazia.');
-
-  await closeArtifactOverlay(dialog);
-
-  return { text, title: lessonTitle, transcript: text };
+    if (text.length < 80) throw new Error('A transcrição retornou vazia.');
+    return { text, title: lessonTitle, transcript: text };
+  } finally {
+    // A failed transcription must not leave its modal covering the remaining
+    // materials (which used to make the mind-map step time out afterwards).
+    await closeArtifactOverlay(dialog || getTranscriptDialog());
+  }
 }
 
 function questionToText(question) {
@@ -327,7 +334,12 @@ async function ensureFlashcardsPanel() {
 }
 
 function getFlashcardProgress(panel) {
-  const match = normalize(panel.innerText).match(/(\d+)\s*\/\s*(\d+)\s*cartões/i);
+  const text = normalize(panel?.innerText || panel?.textContent);
+  // Gran uses both "1 / 10 cartões" and "Cartão 1 de 10" depending on
+  // the lesson/player version.  Prefer an explicit card label, then fall
+  // back to the only position/total pair displayed inside the player.
+  const match = text.match(/(?:flashcards?|cart(?:ão|ões))\s*(\d+)\s*(?:\/|de)\s*(\d+)/i)
+    || text.match(/(\d+)\s*(?:\/|de)\s*(\d+)\s*(?:flashcards?|cart(?:ão|ões))?/i);
   if (!match) throw new Error('Não encontrei o contador dos flashcards.');
   return { current: Number(match[1]), total: Number(match[2]) };
 }
@@ -342,31 +354,34 @@ function getFlashcard(panel) {
 }
 
 async function extractFlashcards() {
-  const panel = await ensureFlashcardsPanel();
-  const initial = getFlashcardProgress(panel);
-  const cards = [];
-  for (let position = initial.current; position > 1; position -= 1) {
-    const previous = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-left"]') && !button.disabled);
-    if (!previous) throw new Error(`Não consegui voltar ao flashcard ${position - 1}.`);
-    previous.click();
-    await waitFor(() => getFlashcardProgress(panel).current === position - 1 ? panel : null);
+  let panel = null;
+  try {
+    panel = await ensureFlashcardsPanel();
+    const initial = getFlashcardProgress(panel);
+    const cards = [];
+    for (let position = initial.current; position > 1; position -= 1) {
+      const previous = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-left"]') && !button.disabled);
+      if (!previous) throw new Error(`Não consegui voltar ao flashcard ${position - 1}.`);
+      previous.click();
+      await waitFor(() => getFlashcardProgress(panel).current === position - 1 ? panel : null);
+    }
+    const total = getFlashcardProgress(panel).total;
+    for (let position = 1; position <= total; position += 1) {
+      cards.push(getFlashcard(panel));
+      if (position === total) break;
+      const next = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-right"]') && !button.disabled);
+      if (!next) throw new Error(`Não consegui avançar do flashcard ${position}.`);
+      next.click();
+      await waitFor(() => getFlashcardProgress(panel).current === position + 1 ? panel : null);
+    }
+    const lessonTitle = normalize(document.querySelector('main h2')?.textContent) || 'aula-gran';
+    const text = ['FLASHCARDS', `Aula: ${lessonTitle}`, `Origem: ${location.href}`, `Extraído em: ${new Date().toLocaleString('pt-BR')}`, '', ...cards.flatMap((card) => [`FLASHCARD ${card.current}`, `Frente: ${card.front}`, `Verso: ${card.back}`, ''])].join('\n');
+    return { text: `${text}\n`, title: lessonTitle, cards };
+  } finally {
+    // Do this on failure too, otherwise the following collector is blocked by
+    // the player overlay.
+    await closeArtifactOverlay(panel || getFlashcardsPanel());
   }
-  const total = getFlashcardProgress(panel).total;
-  for (let position = 1; position <= total; position += 1) {
-    cards.push(getFlashcard(panel));
-    if (position === total) break;
-    const next = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-right"]') && !button.disabled);
-    if (!next) throw new Error(`Não consegui avançar do flashcard ${position}.`);
-    next.click();
-    await waitFor(() => getFlashcardProgress(panel).current === position + 1 ? panel : null);
-  }
-  const lessonTitle = normalize(document.querySelector('main h2')?.textContent) || 'aula-gran';
-  const text = ['FLASHCARDS', `Aula: ${lessonTitle}`, `Origem: ${location.href}`, `Extraído em: ${new Date().toLocaleString('pt-BR')}`, '', ...cards.flatMap((card) => [`FLASHCARD ${card.current}`, `Frente: ${card.front}`, `Verso: ${card.back}`, ''])].join('\n');
-  // The complete importer continues with exercises and mind maps. Close this
-  // overlay first; otherwise the Gran UI can leave the next artifact button
-  // inaccessible behind the flashcard player.
-  await closeArtifactOverlay(panel);
-  return { text: `${text}\n`, title: lessonTitle, cards };
 }
 
 function findArtifactButton(names) {
@@ -488,6 +503,12 @@ async function collectLessonPackage() {
       const reason = error?.message || String(error);
       console.info(`StudyFlash skipped ${label}:`, reason);
       skipped.push(`${label}: ${reason}`);
+      // Collectors are independent. Clear any incomplete Gran modal before
+      // attempting the next one, so one unavailable artifact cannot cascade
+      // into misleading errors for the others.
+      await closeArtifactOverlay(getTranscriptDialog());
+      await closeArtifactOverlay(getFlashcardsPanel());
+      await closeArtifactOverlay(getFixationDialog());
       return fallback;
     }
   };
