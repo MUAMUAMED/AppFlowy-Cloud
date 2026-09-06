@@ -1,11 +1,11 @@
-use actix_web::{web, HttpRequest, Scope};
 use crate::api::util::realtime_user_for_web_request;
 use crate::biz::workspace::page_view::create_page;
-use shared_entity::dto::workspace_dto::ViewLayout;
+use actix_web::{HttpRequest, Scope, web};
 use app_error::AppError;
 use chrono::{DateTime, Days, Duration, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use shared_entity::dto::workspace_dto::ViewLayout;
 use shared_entity::response::{AppResponse, JsonAppResponse};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -21,10 +21,7 @@ type ReviewResult<T> = std::result::Result<T, AppError>;
 
 pub fn review_scope() -> Scope {
   web::scope("/api/review")
-    .service(
-      web::resource("/{workspace_id}/dashboard")
-        .route(web::get().to(get_dashboard_handler)),
-    )
+    .service(web::resource("/{workspace_id}/dashboard").route(web::get().to(get_dashboard_handler)))
     .service(
       web::resource("/{workspace_id}/taxonomy")
         .route(web::get().to(list_taxonomy_handler))
@@ -40,8 +37,7 @@ pub fn review_scope() -> Scope {
         .route(web::post().to(create_card_handler)),
     )
     .service(
-      web::resource("/{workspace_id}/cards/import")
-        .route(web::post().to(import_cards_handler)),
+      web::resource("/{workspace_id}/cards/import").route(web::post().to(import_cards_handler)),
     )
     .service(
       web::resource("/{workspace_id}/lesson-import")
@@ -49,8 +45,7 @@ pub fn review_scope() -> Scope {
         .route(web::post().to(import_lesson_handler)),
     )
     .service(
-      web::resource("/{workspace_id}/cards/{card_id}")
-        .route(web::patch().to(update_card_handler)),
+      web::resource("/{workspace_id}/cards/{card_id}").route(web::patch().to(update_card_handler)),
     )
     .service(
       web::resource("/{workspace_id}/cards/{card_id}/review")
@@ -215,6 +210,10 @@ struct CardListQuery {
   content_id: Option<Uuid>,
   tag: Option<String>,
   card_type: Option<String>,
+  /// Limits a review session to cards created from one document.  Imported
+  /// lessons use this to keep a lesson's flashcards and questions together
+  /// without pulling unrelated cards from the global queue.
+  source_view_id: Option<Uuid>,
   #[serde(default)]
   due_only: bool,
   #[serde(default)]
@@ -454,12 +453,10 @@ async fn sync_page_taxonomy_handler(
   }
 
   if synced_source_ids.is_empty() {
-    sqlx::query(
-      "DELETE FROM af_review_taxonomy WHERE workspace_id = $1 AND auto_managed",
-    )
-    .bind(workspace_id)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("DELETE FROM af_review_taxonomy WHERE workspace_id = $1 AND auto_managed")
+      .bind(workspace_id)
+      .execute(&mut *tx)
+      .await?;
   } else {
     sqlx::query(
       r#"DELETE FROM af_review_taxonomy
@@ -539,16 +536,23 @@ async fn import_lesson_handler(
   let mut request = payload.into_inner();
   let title = request.title.trim().to_owned();
   if title.is_empty() || title.len() > 500 {
-    return Err(AppError::InvalidRequest("lesson title must contain 1 to 500 characters".to_string()));
+    return Err(AppError::InvalidRequest(
+      "lesson title must contain 1 to 500 characters".to_string(),
+    ));
   }
   if request.source_url.trim().is_empty() || request.source_url.len() > 4_000 {
-    return Err(AppError::InvalidRequest("a valid lesson source URL is required".to_string()));
+    return Err(AppError::InvalidRequest(
+      "a valid lesson source URL is required".to_string(),
+    ));
   }
   if request.cards.len() > 200 {
-    return Err(AppError::InvalidRequest("a lesson import is limited to 200 flashcards".to_string()));
+    return Err(AppError::InvalidRequest(
+      "a lesson import is limited to 200 flashcards".to_string(),
+    ));
   }
 
-  let resolved_taxonomy = resolve_source_taxonomy(&state.pg_pool, workspace_id, request.parent_view_id).await?;
+  let resolved_taxonomy =
+    resolve_source_taxonomy(&state.pg_pool, workspace_id, request.parent_view_id).await?;
   let subject_id = request.subject_id.or(resolved_taxonomy.subject_id);
   let mut topic_id = request.topic_id.or(resolved_taxonomy.topic_id);
   let mut content_id = request.content_id.or(resolved_taxonomy.content_id);
@@ -591,7 +595,7 @@ async fn import_lesson_handler(
       workspace_id,
       &page.view_id,
       &ViewLayout::Document,
-      Some(name),
+      Some(&name),
       Some(&data),
       None,
       None,
@@ -610,8 +614,8 @@ async fn import_lesson_handler(
   // An imported lesson is itself a topic when placed in a subject and content
   // when placed in a topic. This keeps the page tree and Review taxonomy in
   // lockstep without requiring a separate classification action afterwards.
-  let needs_taxonomy = (subject_id.is_some() && topic_id.is_none())
-    || (topic_id.is_some() && content_id.is_none());
+  let needs_taxonomy =
+    (subject_id.is_some() && topic_id.is_none()) || (topic_id.is_some() && content_id.is_none());
   if !request.cards.is_empty() || needs_taxonomy {
     let mut tx = state.pg_pool.begin().await?;
     let taxonomy_name: String = title.chars().take(200).collect();
@@ -690,13 +694,18 @@ async fn resolve_source_taxonomy(
   .bind(source_view_id)
   .fetch_optional(pool)
   .await?;
-  let Some(row) = row else { return Ok(SourceTaxonomy::default()); };
+  let Some(row) = row else {
+    return Ok(SourceTaxonomy::default());
+  };
 
   let taxonomy_id: Uuid = row.get("taxonomy_id");
   let parent_id: Option<Uuid> = row.get("parent_id");
   let kind: String = row.get("kind");
   match kind.as_str() {
-    "subject" => Ok(SourceTaxonomy { subject_id: Some(taxonomy_id), ..Default::default() }),
+    "subject" => Ok(SourceTaxonomy {
+      subject_id: Some(taxonomy_id),
+      ..Default::default()
+    }),
     "topic" => Ok(SourceTaxonomy {
       subject_id: parent_id,
       topic_id: Some(taxonomy_id),
@@ -716,7 +725,11 @@ async fn resolve_source_taxonomy(
       } else {
         None
       };
-      Ok(SourceTaxonomy { subject_id, topic_id, content_id: Some(taxonomy_id) })
+      Ok(SourceTaxonomy {
+        subject_id,
+        topic_id,
+        content_id: Some(taxonomy_id),
+      })
     },
     _ => Ok(SourceTaxonomy::default()),
   }
@@ -724,16 +737,31 @@ async fn resolve_source_taxonomy(
 
 fn lesson_page_data(request: &LessonImportRequest) -> Value {
   let mut children = Vec::new();
-  push_document_text(&mut children, &format!("Aula importada do Gran\nOrigem: {}", request.source_url));
+  push_document_text(
+    &mut children,
+    &format!("Aula importada do Gran\nOrigem: {}", request.source_url),
+  );
   if !request.discipline.trim().is_empty() {
-    push_document_text(&mut children, &format!("Matéria: {}", request.discipline.trim()));
+    push_document_text(
+      &mut children,
+      &format!("Matéria: {}", request.discipline.trim()),
+    );
   }
   if !request.topic.trim().is_empty() {
     push_document_text(&mut children, &format!("Tópico: {}", request.topic.trim()));
   }
-  push_document_text(&mut children, "Os resumos, a transcrição e os mapas mentais estão organizados em páginas filhas desta aula.");
+  push_document_text(
+    &mut children,
+    "Os resumos, a transcrição e os mapas mentais estão organizados em páginas filhas desta aula.",
+  );
   if !request.cards.is_empty() {
-    push_document_text(&mut children, &format!("{} cartão(ões), incluindo questões quando disponíveis, foram criados no formato nativo da Revisão e vinculados a esta aula.", request.cards.len()));
+    push_document_text(
+      &mut children,
+      &format!(
+        "{} cartão(ões), incluindo questões quando disponíveis, foram criados no formato nativo da Revisão e vinculados a esta aula.",
+        request.cards.len()
+      ),
+    );
   }
   if !request.skipped_materials.is_empty() {
     push_document_heading(&mut children, "MATERIAIS NÃO DISPONÍVEIS NESTA IMPORTAÇÃO");
@@ -745,16 +773,32 @@ fn lesson_page_data(request: &LessonImportRequest) -> Value {
 
 /// Builds the documents nested directly below the imported lesson. Empty
 /// materials do not produce blank pages.
-fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(&'static str, Value)> {
+fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(String, Value)> {
   let mut pages = Vec::new();
+  let lesson_title = request.title.trim();
+  if !request.cards.is_empty() {
+    pages.push((
+      format!("Revisão — {lesson_title}"),
+      review_scope_page_data(request.cards.len()),
+    ));
+  }
   if !request.summary.trim().is_empty() {
-    pages.push(("Resumo", document_text_data(&request.summary)));
+    pages.push((
+      format!("Resumo — {lesson_title}"),
+      document_text_data(&request.summary),
+    ));
   }
   if !request.pocket_review.trim().is_empty() {
-    pages.push(("Revisão de bolso", document_text_data(&request.pocket_review)));
+    pages.push((
+      format!("Revisão de bolso — {lesson_title}"),
+      document_text_data(&request.pocket_review),
+    ));
   }
   if !request.transcript.trim().is_empty() {
-    pages.push(("Transcrição", document_text_data(&request.transcript)));
+    pages.push((
+      format!("Transcrição — {lesson_title}"),
+      document_text_data(&request.transcript),
+    ));
   }
   if !request.mind_maps.is_empty() {
     let mut children = Vec::new();
@@ -764,14 +808,29 @@ fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(&'static str, Va
         "data": { "url": map, "align": "center", "image_type": 1 }
       }));
     }
-    pages.push(("Mapas mentais", serde_json::json!({ "type": "page", "children": children })));
+    pages.push((
+      format!("Mapa mental — {lesson_title}"),
+      serde_json::json!({ "type": "page", "children": children }),
+    ));
   }
   pages
 }
 
+fn review_scope_page_data(card_count: usize) -> Value {
+  let mut children = Vec::new();
+  push_document_heading(&mut children, "Revisão desta aula");
+  push_document_text(
+    &mut children,
+    &format!(
+      "Esta aula possui {card_count} cartão(ões) nativos, incluindo questões quando disponíveis. Abra a aula e use os botões “Flashcards desta aula” ou “Questões desta aula” para iniciar uma sessão limitada a este conteúdo."
+    ),
+  );
+  serde_json::json!({ "type": "page", "children": children })
+}
+
 fn document_text_data(text: &str) -> Value {
   let mut children = Vec::new();
-  push_document_text(&mut children, text);
+  push_document_rich_text(&mut children, text);
   serde_json::json!({ "type": "page", "children": children })
 }
 
@@ -784,18 +843,119 @@ fn push_document_heading(children: &mut Vec<Value>, text: &str) {
 
 fn push_document_text(children: &mut Vec<Value>, text: &str) {
   for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-    let (block_type, line) = if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("• ")) {
-      ("bulleted_list", item)
-    } else if let Some(item) = numbered_list_item(line) {
-      ("numbered_list", item)
-    } else {
-      ("paragraph", line)
-    };
+    let (block_type, line) =
+      if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("• ")) {
+        ("bulleted_list", item)
+      } else if let Some(item) = numbered_list_item(line) {
+        ("numbered_list", item)
+      } else {
+        ("paragraph", line)
+      };
     children.push(serde_json::json!({
       "type": block_type,
       "data": { "delta": [{ "insert": line }] }
     }));
   }
+}
+
+/// Converts the lightweight Markdown emitted by the Gran importer into the
+/// native AppFlowy document block types.  This deliberately stays small and
+/// predictable: headings, bullets, numbered lists, bold spans and the Gran
+/// “Cai em Prova!” note are all represented as editor blocks rather than
+/// flattened into ordinary paragraphs.
+fn push_document_rich_text(children: &mut Vec<Value>, text: &str) {
+  let mut callout_lines = Vec::new();
+  let flush_callout = |children: &mut Vec<Value>, lines: &mut Vec<String>| {
+    if lines.is_empty() {
+      return;
+    }
+    let joined = lines.join("\n");
+    children.push(serde_json::json!({
+      "type": "callout",
+      "data": {
+        "icon": "💡",
+        "bgColor": "block-bg-color-1",
+        "delta": markdown_delta(&joined)
+      }
+    }));
+    lines.clear();
+  };
+
+  for raw_line in text.lines() {
+    let line = raw_line.trim();
+    if line.is_empty() {
+      flush_callout(children, &mut callout_lines);
+      continue;
+    }
+    if let Some(note) = line.strip_prefix("> [!TIP]") {
+      flush_callout(children, &mut callout_lines);
+      callout_lines.push(note.trim().to_owned());
+      continue;
+    }
+    if let Some(note) = line.strip_prefix("> ") {
+      callout_lines.push(note.trim().to_owned());
+      continue;
+    }
+    flush_callout(children, &mut callout_lines);
+
+    if let Some((level, heading)) = markdown_heading(line) {
+      children.push(serde_json::json!({
+        "type": "heading",
+        "data": { "level": level, "delta": markdown_delta(heading) }
+      }));
+      continue;
+    }
+    let (block_type, content) =
+      if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("• ")) {
+        ("bulleted_list", item)
+      } else if let Some(item) = numbered_list_item(line) {
+        ("numbered_list", item)
+      } else {
+        ("paragraph", line)
+      };
+    children.push(serde_json::json!({
+      "type": block_type,
+      "data": { "delta": markdown_delta(content) }
+    }));
+  }
+  flush_callout(children, &mut callout_lines);
+}
+
+fn markdown_heading(line: &str) -> Option<(u8, &str)> {
+  let hashes = line
+    .chars()
+    .take_while(|character| *character == '#')
+    .count();
+  if !(1..=6).contains(&hashes) || line.as_bytes().get(hashes) != Some(&b' ') {
+    return None;
+  }
+  Some((hashes as u8, line[hashes + 1..].trim()))
+}
+
+fn markdown_delta(text: &str) -> Vec<Value> {
+  let mut delta = Vec::new();
+  let mut rest = text;
+  while let Some(start) = rest.find("**") {
+    let before = &rest[..start];
+    if !before.is_empty() {
+      delta.push(serde_json::json!({ "insert": before }));
+    }
+    let after_open = &rest[start + 2..];
+    let Some(end) = after_open.find("**") else {
+      delta.push(serde_json::json!({ "insert": "**" }));
+      rest = after_open;
+      continue;
+    };
+    let bold = &after_open[..end];
+    if !bold.is_empty() {
+      delta.push(serde_json::json!({ "insert": bold, "attributes": { "bold": true } }));
+    }
+    rest = &after_open[end + 2..];
+  }
+  if !rest.is_empty() || delta.is_empty() {
+    delta.push(serde_json::json!({ "insert": rest }));
+  }
+  delta
 }
 
 fn numbered_list_item(line: &str) -> Option<&str> {
@@ -804,7 +964,10 @@ fn numbered_list_item(line: &str) -> Option<&str> {
   if number_end == 0 || !matches!(separator, b'.' | b')') {
     return None;
   }
-  line.get(number_end + 1..).map(str::trim).filter(|item| !item.is_empty())
+  line
+    .get(number_end + 1..)
+    .map(str::trim)
+    .filter(|item| !item.is_empty())
 }
 
 async fn insert_card(
@@ -880,7 +1043,8 @@ async fn list_cards_handler(
          AND ($5::uuid IS NULL OR c.content_id = $5)
          AND ($6::text IS NULL OR $6 = ANY(c.tags))
          AND ($7::text IS NULL OR c.card_type = $7)
-         AND (NOT $8::boolean OR s.due_at < $9)
+         AND ($8::uuid IS NULL OR c.source_view_id = $8)
+         AND (NOT $9::boolean OR s.due_at < $10)
        ORDER BY s.due_at, c.created_at"#,
   )
   .bind(workspace_id)
@@ -890,6 +1054,7 @@ async fn list_cards_handler(
   .bind(query.content_id)
   .bind(query.tag.as_deref().map(|tag| tag.trim().to_lowercase()))
   .bind(query.card_type.as_deref())
+  .bind(query.source_view_id)
   .bind(query.due_only)
   .bind(window.end)
   .fetch_all(&state.pg_pool)
@@ -951,7 +1116,9 @@ async fn review_card_handler(
   let uid = workspace_uid(&state.pg_pool, &state, &user_uuid, workspace_id).await?;
   let request = payload.into_inner();
   if !(1..=5).contains(&request.difficulty) {
-    return Err(AppError::InvalidRequest("difficulty must be between 1 and 5".to_string()));
+    return Err(AppError::InvalidRequest(
+      "difficulty must be between 1 and 5".to_string(),
+    ));
   }
   let window = review_window(request.timezone_offset_minutes)?;
   materialize_daily_queue(&state.pg_pool, workspace_id, uid, &window).await?;
@@ -967,7 +1134,9 @@ struct ReviewWindow {
 
 fn review_window(offset_minutes: i32) -> Result<ReviewWindow, AppError> {
   if !(-14 * 60..=14 * 60).contains(&offset_minutes) {
-    return Err(AppError::InvalidRequest("invalid timezone offset".to_string()));
+    return Err(AppError::InvalidRequest(
+      "invalid timezone offset".to_string(),
+    ));
   }
   let offset = Duration::minutes(i64::from(offset_minutes));
   let local_now = Utc::now().naive_utc() + offset;
@@ -1110,13 +1279,19 @@ async fn validate_taxonomy(
   request: &CreateTaxonomyRequest,
 ) -> Result<(), AppError> {
   if request.name.trim().is_empty() {
-    return Err(AppError::InvalidRequest("taxonomy name is required".to_string()));
+    return Err(AppError::InvalidRequest(
+      "taxonomy name is required".to_string(),
+    ));
   }
   let expected_parent = match request.kind.as_str() {
     "subject" => None,
     "topic" => Some("subject"),
     "content" => Some("topic"),
-    _ => return Err(AppError::InvalidRequest("invalid taxonomy kind".to_string())),
+    _ => {
+      return Err(AppError::InvalidRequest(
+        "invalid taxonomy kind".to_string(),
+      ));
+    },
   };
   match (expected_parent, request.parent_id) {
     (None, None) => Ok(()),
@@ -1129,11 +1304,16 @@ async fn validate_taxonomy(
       .fetch_optional(pool)
       .await?;
       if parent_kind.as_deref() != Some(kind) {
-        return Err(AppError::InvalidRequest(format!("{} requires a {} parent", request.kind, kind)));
+        return Err(AppError::InvalidRequest(format!(
+          "{} requires a {} parent",
+          request.kind, kind
+        )));
       }
       Ok(())
     },
-    _ => Err(AppError::InvalidRequest("invalid taxonomy parent".to_string())),
+    _ => Err(AppError::InvalidRequest(
+      "invalid taxonomy parent".to_string(),
+    )),
   }
 }
 
@@ -1155,7 +1335,9 @@ async fn validate_card(
   match request.card_type.as_str() {
     "classic" => {
       if request.back.trim().is_empty() {
-        return Err(AppError::InvalidRequest("classic cards require a back".to_string()));
+        return Err(AppError::InvalidRequest(
+          "classic cards require a back".to_string(),
+        ));
       }
     },
     "multiple_choice" => {
@@ -1170,7 +1352,10 @@ async fn validate_card(
       }
     },
     "true_false" => {
-      if !matches!(request.correct_answer.to_lowercase().as_str(), "true" | "false") {
+      if !matches!(
+        request.correct_answer.to_lowercase().as_str(),
+        "true" | "false"
+      ) {
         return Err(AppError::InvalidRequest(
           "true/false cards require correct_answer true or false".to_string(),
         ));
@@ -1274,7 +1459,12 @@ async fn ensure_profile(
   Ok(())
 }
 
-async fn load_card(pool: &PgPool, workspace_id: Uuid, uid: i64, card_id: Uuid) -> Result<ReviewCard, AppError> {
+async fn load_card(
+  pool: &PgPool,
+  workspace_id: Uuid,
+  uid: i64,
+  card_id: Uuid,
+) -> Result<ReviewCard, AppError> {
   let row = sqlx::query(
     r#"SELECT c.*, s.state, s.due_at, s.interval_seconds, s.difficulty_score,
               s.correct_count, s.incorrect_count
@@ -1545,7 +1735,8 @@ async fn apply_review(
   .bind(uid)
   .fetch_one(&mut *tx)
   .await?;
-  let completion_bonus = maybe_award_completion(&mut tx, workspace_id, uid, window.date, goal, completed).await?;
+  let completion_bonus =
+    maybe_award_completion(&mut tx, workspace_id, uid, window.date, goal, completed).await?;
   let profile = sqlx::query(
     "SELECT total_xp, current_streak FROM af_review_profile WHERE workspace_id = $1 AND uid = $2",
   )
@@ -1568,7 +1759,11 @@ async fn apply_review(
   })
 }
 
-fn determine_correct(card_type: &str, answer: &str, request: &ReviewRequest) -> Result<bool, AppError> {
+fn determine_correct(
+  card_type: &str,
+  answer: &str,
+  request: &ReviewRequest,
+) -> Result<bool, AppError> {
   if card_type == "classic" {
     return request
       .correct
@@ -1595,13 +1790,17 @@ fn calculate_interval(
     } else {
       [DAY, 12 * 3_600, 6 * 3_600, 2 * 3_600, 10 * 60][(difficulty - 1) as usize]
     };
-    return (seconds, if correct { "review" } else { "learning" }.to_string());
+    return (
+      seconds,
+      if correct { "review" } else { "learning" }.to_string(),
+    );
   }
   if correct {
     let multipliers = [3.2, 2.6, 2.0, 1.5, 1.2];
     let history_bonus = 1.0 + (f64::from(consecutive_correct.min(5)) * 0.03);
-    let seconds = ((current.max(DAY) as f64) * multipliers[(difficulty - 1) as usize] * history_bonus)
-      .round() as i64;
+    let seconds =
+      ((current.max(DAY) as f64) * multipliers[(difficulty - 1) as usize] * history_bonus).round()
+        as i64;
     (seconds.max(DAY), "review".to_string())
   } else {
     let factors = [0.5, 0.4, 0.3, 0.2, 0.1];
@@ -1681,8 +1880,9 @@ async fn maybe_award_completion(
 #[cfg(test)]
 mod tests {
   use super::{
-    calculate_interval, calculate_review_xp, lesson_material_pages, lesson_page_data,
-    numbered_list_item, push_document_text, CreateCardRequest, LessonImportRequest,
+    CreateCardRequest, LessonImportRequest, calculate_interval, calculate_review_xp,
+    lesson_material_pages, lesson_page_data, numbered_list_item, push_document_rich_text,
+    push_document_text,
   };
   use serde_json::json;
   use uuid::Uuid;
@@ -1723,12 +1923,27 @@ mod tests {
   #[test]
   fn imported_text_preserves_simple_lists_as_editor_blocks() {
     let mut children = Vec::new();
-    push_document_text(&mut children, "Introdução\n- ponto importante\n2. segunda etapa");
+    push_document_text(
+      &mut children,
+      "Introdução\n- ponto importante\n2. segunda etapa",
+    );
     assert_eq!(children[0]["type"], "paragraph");
     assert_eq!(children[1]["type"], "bulleted_list");
     assert_eq!(children[2]["type"], "numbered_list");
     assert_eq!(numbered_list_item("3) exemplo"), Some("exemplo"));
     assert_eq!(numbered_list_item("texto comum"), None);
+  }
+
+  #[test]
+  fn imported_rich_text_preserves_headings_bold_and_study_callouts() {
+    let mut children = Vec::new();
+    push_document_rich_text(
+      &mut children,
+      "## Papel do NumPy\n**Ponto importante:** o array é homogêneo.\n\n> [!TIP] Cai em Prova!\n> **Memorize** este conceito.",
+    );
+    assert_eq!(children[0]["type"], "heading");
+    assert_eq!(children[1]["data"]["delta"][0]["attributes"]["bold"], true);
+    assert_eq!(children[2]["type"], "callout");
   }
 
   #[test]
@@ -1772,12 +1987,13 @@ mod tests {
     };
 
     let materials = lesson_material_pages(&request);
-    assert_eq!(materials.len(), 4);
-    assert_eq!(materials[0].0, "Resumo");
-    assert_eq!(materials[1].0, "Revisão de bolso");
-    assert_eq!(materials[2].0, "Transcrição");
-    assert_eq!(materials[3].0, "Mapas mentais");
-    assert_eq!(materials[3].1["children"][0]["type"], "image");
+    assert_eq!(materials.len(), 5);
+    assert_eq!(materials[0].0, "Revisão — Morfologia III");
+    assert_eq!(materials[1].0, "Resumo — Morfologia III");
+    assert_eq!(materials[2].0, "Revisão de bolso — Morfologia III");
+    assert_eq!(materials[3].0, "Transcrição — Morfologia III");
+    assert_eq!(materials[4].0, "Mapa mental — Morfologia III");
+    assert_eq!(materials[4].1["children"][0]["type"], "image");
 
     let lesson = lesson_page_data(&request);
     let lesson_text = lesson["children"].to_string();

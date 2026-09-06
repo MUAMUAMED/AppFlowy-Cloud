@@ -71,14 +71,27 @@ function transcriptToText(dialog, lessonTitle) {
   const contentNodes = dialog.querySelectorAll('h1, h2, h3, h4, p, li');
   const seen = new Set();
 
+  let pendingStudyTip = false;
   for (const node of contentNodes) {
     const text = normalize(node.innerText || node.textContent);
     if (!text || text === 'Transcrição' || text === 'Expandir' || text === 'Fechar' || seen.has(text)) continue;
     seen.add(text);
 
-    if (/^H[1-4]$/.test(node.tagName)) lines.push(`\n${text.toUpperCase()}\n`);
-    else if (node.tagName === 'LI') lines.push(`- ${text}`);
-    else lines.push(text);
+    if (/^H[1-4]$/.test(node.tagName)) {
+      pendingStudyTip = false;
+      lines.push(`\n${'#'.repeat(Number(node.tagName.slice(1)) + 1)} ${inlineMarkdown(node)}\n`);
+    } else if (node.tagName === 'LI') {
+      pendingStudyTip = false;
+      lines.push(`- ${inlineMarkdown(node)}`);
+    } else if (/^💡?\s*Cai em Prova!?$/i.test(text)) {
+      pendingStudyTip = true;
+      lines.push('> [!TIP] Cai em Prova!');
+    } else if (pendingStudyTip) {
+      lines.push(`> ${inlineMarkdown(node)}`);
+      pendingStudyTip = false;
+    } else {
+      lines.push(inlineMarkdown(node));
+    }
   }
 
   if (lines.length <= 4) {
@@ -88,6 +101,18 @@ function transcriptToText(dialog, lessonTitle) {
   }
 
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+}
+
+// Keep the semantic formatting that Gran has already rendered.  The backend
+// turns this compact Markdown into native AppFlowy heading/list/callout blocks.
+function inlineMarkdown(node) {
+  const visit = (current) => {
+    if (current.nodeType === Node.TEXT_NODE) return current.nodeValue || '';
+    const text = [...current.childNodes].map(visit).join('');
+    const tag = current.tagName?.toUpperCase();
+    return ['STRONG', 'B'].includes(tag) ? `**${text}**` : text;
+  };
+  return normalize(visit(node));
 }
 
 async function extractTranscript() {
@@ -411,7 +436,8 @@ function artifactPanelText(panel) {
   const chunks = [...panel.querySelectorAll('h1, h2, h3, h4, p, li')]
     .map((element) => {
       const text = normalize(element.innerText || element.textContent);
-      return element.tagName === 'LI' ? `- ${text}` : text;
+      if (/^H[1-4]$/.test(element.tagName)) return `${'#'.repeat(Number(element.tagName.slice(1)) + 1)} ${inlineMarkdown(element)}`;
+      return element.tagName === 'LI' ? `- ${inlineMarkdown(element)}` : inlineMarkdown(element);
     })
     .filter((text) => text && !ignored.test(text));
   return [...new Set(chunks)].join('\n\n').trim();
