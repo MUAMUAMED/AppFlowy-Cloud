@@ -477,9 +477,32 @@ async function extractMindMaps() {
       .filter((source) => /^https?:\/\//.test(source));
     if (imageUrls.length) return imageUrls;
 
-    // The current player renders an interactive Markmap SVG rather than an
-    // <img>. Preserve that complete vector map as an image data URL so it can
-    // become the normal "Mapas mentais" child page in StudyFlash.
+    // Gran uses Markmap. Its initial view renders only root branches; open all
+    // nodes before serialising so StudyFlash receives the complete structure.
+    const expandAll = [...panel.querySelectorAll('button')].find((candidate) =>
+      normalize(candidate.innerText || candidate.textContent) === 'Abrir tudo',
+    );
+    const firstMap = panel.querySelector('svg.markmap');
+    const before = firstMap?.querySelectorAll('g.markmap-node').length || 0;
+    if (expandAll && firstMap) {
+      expandAll.click();
+      const startedAt = Date.now();
+      let lastCount = before;
+      let stableSince = Date.now();
+      while (Date.now() - startedAt < 4_000) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        const count = firstMap.querySelectorAll('g.markmap-node').length;
+        if (count !== lastCount) {
+          lastCount = count;
+          stableSince = Date.now();
+        }
+        if (count > before && Date.now() - stableSince > 500) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    // Keep Markmap's data-path attributes: the StudyFlash viewer uses them to
+    // collapse and expand descendant topics.
     const maps = [...panel.querySelectorAll('svg.markmap')].map((svg) => {
       const copy = svg.cloneNode(true);
       copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');

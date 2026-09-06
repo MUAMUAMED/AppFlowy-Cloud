@@ -2743,6 +2743,84 @@ index d5d98b9..4361fc7 100644
 +      return '\n';
 +    }
 +
-     return node.children.map((child) => extractTextFromHAST(child as HastElement | HastText)).join('');
-   }
+    return node.children.map((child) => extractTextFromHAST(child as HastElement | HastText)).join('');
+  }
+ 
+  }
+ 
+diff --git a/src/components/editor/components/blocks/image/ImageRender.tsx b/src/components/editor/components/blocks/image/ImageRender.tsx
+index 8f48eb8..4ba8084 100644
+--- a/src/components/editor/components/blocks/image/ImageRender.tsx
++++ b/src/components/editor/components/blocks/image/ImageRender.tsx
+@@ -8,6 +8,7 @@ import { CustomEditor } from '@/application/slate-yjs/command';
+ import ImageResizer from '@/components/editor/components/blocks/image/ImageResizer';
+ import ImageToolbar from '@/components/editor/components/blocks/image/ImageToolbar';
+ import Img from '@/components/editor/components/blocks/image/Img';
++import InteractiveMindMap from '@/components/editor/components/blocks/image/InteractiveMindMap';
+ import { ImageBlockNode } from '@/components/editor/editor.type';
+ import { Log } from '@/utils/log';
+ 
+@@ -60,6 +61,10 @@ function ImageRender({
+ 
+   if (!url) return null;
+ 
++  if (url.startsWith('data:image/svg+xml') && url.includes('markmap-node')) {
++    return <InteractiveMindMap url={url} />;
++  }
++
+   return (
+     <div
+       style={{
+diff --git a/src/components/editor/components/blocks/image/InteractiveMindMap.tsx b/src/components/editor/components/blocks/image/InteractiveMindMap.tsx
+new file mode 100644
+index 0000000..c876302
+--- /dev/null
++++ b/src/components/editor/components/blocks/image/InteractiveMindMap.tsx
+@@ -0,0 +1,46 @@
++import { useEffect, useMemo, useRef, useState } from 'react';
++
++type MindMapAction = 'zoom-in' | 'zoom-out' | 'center' | 'expand' | 'collapse';
++
++function decodeSvg(url: string) {
++  const comma = url.indexOf(',');
++  if (comma < 0) return '';
++  try {
++    return decodeURIComponent(url.slice(comma + 1));
++  } catch {
++    return '';
++  }
++}
++
++function sanitizeSvg(source: string) {
++  const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
++  const svg = doc.documentElement;
++  if (svg.nodeName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) return '';
++  svg.querySelectorAll('script, iframe, object, embed').forEach((element) => element.remove());
++  svg.querySelectorAll('*').forEach((element) => {
++    [...element.attributes].forEach((attribute) => {
++      const name = attribute.name.toLowerCase();
++      const value = attribute.value.trim().toLowerCase();
++      if (name.startsWith('on') || ((name === 'href' || name === 'xlink:href') && !value.startsWith('#') && !value.startsWith('data:'))) element.removeAttribute(attribute.name);
++    });
++  });
++  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
++  svg.setAttribute('width', '100%');
++  svg.setAttribute('height', '100%');
++  return new XMLSerializer().serializeToString(svg);
++}
++
++function mapDocument(svg: string) {
++  return `<!doctype html><html><head><meta charset="utf-8"/><style>html,body{width:100%;height:100%;margin:0;background:#fff;overflow:hidden}svg{display:block;width:100%;height:100%;touch-action:none;user-select:none}.markmap-node circle,.markmap-circle-hitarea{cursor:pointer}</style></head><body>${svg}<script>(()=>{const svg=document.querySelector('svg');if(!svg)return;const fixed=[...svg.children].filter(n=>['defs','style'].includes(n.tagName.toLowerCase()));const viewport=document.createElementNS('http://www.w3.org/2000/svg','g');viewport.id='studyflash-map-viewport';[...svg.children].filter(n=>!fixed.includes(n)).forEach(n=>viewport.appendChild(n));svg.appendChild(viewport);let scale=1,x=0,y=0,drag=null;const render=()=>viewport.setAttribute('transform','translate('+x+' '+y+') scale('+scale+')');const zoom=(amount,cx=0,cy=0)=>{const next=Math.max(.25,Math.min(4,scale*amount));x=cx-(cx-x)*(next/scale);y=cy-(cy-y)*(next/scale);scale=next;render()};const nodes=()=>[...svg.querySelectorAll('g.markmap-node')];const setChildren=(path,visible)=>nodes().forEach(n=>{const p=n.dataset.path||'';if(p.startsWith(path+'.'))n.style.display=visible?'':'none'});svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect();zoom(e.deltaY<0?1.16:1/1.16,e.clientX-r.left,e.clientY-r.top)},{passive:false});svg.addEventListener('pointerdown',e=>{if(e.target.closest('.markmap-circle-hitarea,.markmap-node circle'))return;drag={x:e.clientX,y:e.clientY};svg.setPointerCapture(e.pointerId)});svg.addEventListener('pointermove',e=>{if(!drag)return;x+=e.clientX-drag.x;y+=e.clientY-drag.y;drag={x:e.clientX,y:e.clientY};render()});svg.addEventListener('pointerup',()=>drag=null);svg.addEventListener('click',e=>{const hit=e.target.closest('.markmap-circle-hitarea,.markmap-node circle');if(!hit)return;const node=hit.closest('g.markmap-node');const path=node&&node.dataset.path;if(!path)return;const child=nodes().find(n=>(n.dataset.path||'').startsWith(path+'.'));if(!child)return;setChildren(path,child.style.display==='none')});addEventListener('message',e=>{if(e.source!==parent||!e.data?.studyflashMindMap)return;switch(e.data.action){case'zoom-in':zoom(1.2);break;case'zoom-out':zoom(1/1.2);break;case'center':scale=1;x=0;y=0;render();break;case'expand':nodes().forEach(n=>n.style.display='');break;case'collapse':nodes().forEach(n=>{if((n.dataset.path||'').includes('.'))n.style.display='none'});break;}})})();</script></body></html>`;
++}
++
++export default function InteractiveMindMap({ url }: { url: string }) {
++  const iframe = useRef<HTMLIFrameElement>(null);
++  const [fullScreen, setFullScreen] = useState(false);
++  const source = useMemo(() => sanitizeSvg(decodeSvg(url)), [url]);
++  const srcDoc = useMemo(() => mapDocument(source), [source]);
++  useEffect(() => { if (!fullScreen) return undefined; const close = (event: KeyboardEvent) => event.key === 'Escape' && setFullScreen(false); window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [fullScreen]);
++  if (!source) return null;
++  const send = (action: MindMapAction) => iframe.current?.contentWindow?.postMessage({ studyflashMindMap: true, action }, '*');
++  return <div className={fullScreen ? 'fixed inset-0 z-[100] bg-white p-5' : 'my-3 w-full rounded-xl border border-line-divider'}><div className="flex flex-wrap items-center justify-between gap-2 border-b border-line-divider px-3 py-2 text-xs text-text-caption"><span className="font-medium text-text-title">Mapa mental interativo</span><div className="flex flex-wrap gap-1"><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => send('zoom-out')}>−</button><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => send('zoom-in')}>+</button><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => send('center')}>Centralizar</button><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => send('expand')}>Abrir tudo</button><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => send('collapse')}>Recolher tudo</button><button className="rounded px-2 py-1 hover:bg-fill-list-hover" onClick={() => setFullScreen((value) => !value)}>{fullScreen ? 'Fechar' : 'Expandir'}</button></div></div><iframe ref={iframe} title="Mapa mental" sandbox="allow-scripts" srcDoc={srcDoc} className={fullScreen ? 'h-[calc(100vh-88px)] w-full' : 'h-[520px] w-full'} /><p className="px-3 py-2 text-xs text-text-caption">Arraste para mover, use a roda do mouse para aproximar e clique nos círculos para abrir ou recolher um tópico.</p></div>;
++}
  
