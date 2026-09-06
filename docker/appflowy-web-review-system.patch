@@ -1060,7 +1060,7 @@ index 0000000..c3ea7c3
 +export async function getCards(
 +  client: AxiosInstance,
 +  workspaceId: string,
-+  filters: Partial<Record<'subject_id' | 'topic_id' | 'content_id' | 'tag' | 'card_type', string>>
++  filters: Partial<Record<'subject_id' | 'topic_id' | 'content_id' | 'tag' | 'card_type' | 'source_view_id', string>>
 +) {
 +  return unwrap<ReviewCard[]>(
 +    await client.get(`/api/review/${workspaceId}/cards`, {
@@ -1087,6 +1087,76 @@ index 0000000..c3ea7c3
 +    })
 +  );
 +}
+diff --git a/src/components/review/PageReviewScope.tsx b/src/components/review/PageReviewScope.tsx
+new file mode 100644
+index 0000000..1f6f3b4
+--- /dev/null
++++ b/src/components/review/PageReviewScope.tsx
+@@ -0,0 +1,64 @@
++import { Button } from '@mui/material';
++import React, { useEffect, useState } from 'react';
++import { useNavigate } from 'react-router-dom';
++
++import { useCurrentWorkspaceIdOptional } from '@/components/app/app.hooks';
++import { getCards } from '@/components/review/api';
++import { ReviewCard } from '@/components/review/types';
++import { useServiceOptional } from '@/components/main/app.hooks';
++
++/**
++ * Shows the native Review entry point for a document which has linked cards.
++ * A source view is intentionally exact: a lesson never leaks cards from its
++ * parent topic or another lesson into this session.
++ */
++export function PageReviewScope({ viewId }: { viewId?: string }) {
++  const workspaceId = useCurrentWorkspaceIdOptional();
++  const service = useServiceOptional();
++  const navigate = useNavigate();
++  const [cards, setCards] = useState<ReviewCard[]>([]);
++
++  useEffect(() => {
++    const client = service?.getAxiosInstance();
++    if (!client || !workspaceId || !viewId) {
++      setCards([]);
++      return;
++    }
++    let active = true;
++    void getCards(client, workspaceId, { source_view_id: viewId })
++      .then((items) => {
++        if (active) setCards(items);
++      })
++      .catch(() => {
++        if (active) setCards([]);
++      });
++    return () => {
++      active = false;
++    };
++  }, [service, workspaceId, viewId]);
++
++  if (!workspaceId || !viewId || cards.length === 0) return null;
++
++  const questions = cards.filter((card) => card.card_type === 'multiple_choice');
++  const flashcards = cards.filter((card) => card.card_type !== 'multiple_choice');
++  const open = (scope: 'flashcards' | 'questions') => {
++    navigate(`/app/${workspaceId}/review?source_view_id=${encodeURIComponent(viewId)}&scope=${scope}`);
++  };
++
++  return (
++    <div className='mt-4 flex w-full max-w-[640px] flex-wrap items-center justify-center gap-2 px-6'>
++      {flashcards.length > 0 && (
++        <Button size='small' variant='outlined' onClick={() => open('flashcards')}>
++          🧠 Flashcards desta aula ({flashcards.length})
++        </Button>
++      )}
++      {questions.length > 0 && (
++        <Button size='small' variant='outlined' onClick={() => open('questions')}>
++          ✓ Questões desta aula ({questions.length})
++        </Button>
++      )}
++    </div>
++  );
++}
++
++export default PageReviewScope;
 diff --git a/src/components/review/flashcardImport.ts b/src/components/review/flashcardImport.ts
 new file mode 100644
 index 0000000..ffe0630
@@ -1471,11 +1541,12 @@ diff --git a/src/components/view-meta/ViewMetaPreview.tsx b/src/components/view-
 index 9226b05..f2a0fde 100644
 --- a/src/components/view-meta/ViewMetaPreview.tsx
 +++ b/src/components/view-meta/ViewMetaPreview.tsx
-@@ -5,6 +5,7 @@ import { CoverType, ViewIconType, ViewLayout, ViewMetaCover, ViewMetaIcon, ViewM
+@@ -5,6 +5,8 @@ import { CoverType, ViewIconType, ViewLayout, ViewMetaCover, ViewMetaIcon, ViewM
  import { CustomIconPopover } from '@/components/_shared/cutsom-icon';
  import { notify } from '@/components/_shared/notify';
  import PageIcon from '@/components/_shared/view-icon/PageIcon';
 +import StudyTypeProperty from '@/components/view-meta/StudyTypeProperty';
++import PageReviewScope from '@/components/review/PageReviewScope';
  import TitleEditable from '@/components/view-meta/TitleEditable';
  import ViewCover from '@/components/view-meta/ViewCover';
  import { ColorEnum } from '@/utils/color';
@@ -1488,7 +1559,7 @@ index 9226b05..f2a0fde 100644
          >
            <h1
              style={{
-@@ -290,6 +291,15 @@ export function ViewMetaPreview({
+@@ -290,6 +291,16 @@ export function ViewMetaPreview({
                </>
              )}
            </h1>
@@ -1501,6 +1572,7 @@ index 9226b05..f2a0fde 100644
 +            updatePage={updatePage}
 +            viewId={viewId}
 +          />
++          <PageReviewScope viewId={viewId} />
          </div>
        </div>
      </div>
@@ -1925,11 +1997,11 @@ new file mode 100644
 index 0000000..5ecd9de
 --- /dev/null
 +++ b/src/pages/ReviewPage.tsx
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,510 @@
 +import { Button, LinearProgress, MenuItem, TextField } from '@mui/material';
 +import { AxiosInstance } from 'axios';
 +import React, { useCallback, useEffect, useMemo, useState } from 'react';
-+import { useParams } from 'react-router-dom';
++import { useParams, useSearchParams } from 'react-router-dom';
 +import { toast } from 'sonner';
 +
 +import { useAppHandlers } from '@/components/app/app.hooks';
@@ -2159,6 +2231,7 @@ index 0000000..5ecd9de
 +
 +function ReviewPage() {
 +  const { workspaceId = '' } = useParams();
++  const [searchParams, setSearchParams] = useSearchParams();
 +  const service = useService();
 +  const client = service?.getAxiosInstance() || null;
 +  const [dashboard, setDashboard] = useState<ReviewDashboard | null>(null);
@@ -2173,6 +2246,8 @@ index 0000000..5ecd9de
 +  const [taxonomyName, setTaxonomyName] = useState('');
 +  const [taxonomyKind, setTaxonomyKind] = useState<TaxonomyNode['kind']>('subject');
 +  const [taxonomyParent, setTaxonomyParent] = useState('');
++  const sourceViewId = searchParams.get('source_view_id');
++  const requestedScope = searchParams.get('scope');
 +
 +  const refresh = useCallback(async () => {
 +    if (!client || !workspaceId) return;
@@ -2191,6 +2266,37 @@ index 0000000..5ecd9de
 +      .catch((e) => toast.error(e instanceof Error ? e.message : 'Não foi possível carregar a revisão.'))
 +      .finally(() => setLoading(false));
 +  }, [refresh]);
++
++  useEffect(() => {
++    if (!client || !workspaceId || !sourceViewId) return;
++    let active = true;
++    void getCards(client, workspaceId, { source_view_id: sourceViewId })
++      .then((linkedCards) => {
++        if (!active) return;
++        const cards = requestedScope === 'questions'
++          ? linkedCards.filter((card) => card.card_type === 'multiple_choice')
++          : requestedScope === 'flashcards'
++            ? linkedCards.filter((card) => card.card_type !== 'multiple_choice')
++            : linkedCards;
++        setSearchParams({}, { replace: true });
++        if (cards.length === 0) {
++          toast.error('Não há cartões desse tipo nesta aula.');
++          return;
++        }
++        setSession({
++          title: requestedScope === 'questions' ? 'Questões desta aula' : 'Flashcards desta aula',
++          cards,
++        });
++      })
++      .catch((error) => {
++        if (!active) return;
++        setSearchParams({}, { replace: true });
++        toast.error(error instanceof Error ? error.message : 'Não foi possível abrir a revisão desta aula.');
++      });
++    return () => {
++      active = false;
++    };
++  }, [client, requestedScope, setSearchParams, sourceViewId, workspaceId]);
 +
 +  const subjects = useMemo(() => taxonomy.filter((node) => node.kind === 'subject'), [taxonomy]);
 +  const topics = useMemo(
