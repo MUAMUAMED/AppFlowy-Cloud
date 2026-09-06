@@ -44,10 +44,9 @@ function waitFor(getElement, timeout = 8_000, timeoutMessage = 'O conteúdo demo
 }
 
 function getTranscriptDialog() {
-  return [...document.querySelectorAll('[role="dialog"], dialog')].find((dialog) => {
-    const text = normalize(dialog.innerText || dialog.textContent);
-    return text.startsWith('Transcrição');
-  });
+  // Current Gran lessons render this artifact in a drawer, not a native
+  // dialog. Keep the dialog fallback for older lesson pages.
+  return getArtifactPanel(['transcrição']);
 }
 
 function getReadyTranscriptDialog() {
@@ -95,14 +94,19 @@ async function extractTranscript() {
   const lessonTitle = normalize(document.querySelector('main h2')?.textContent) || 'aula-gran';
   let dialog = null;
   try {
-    const summaryButton = await waitFor(findSummaryButton, 8_000);
+    // New Gran UI exposes the transcription directly in the revision centre.
+    // Older lessons still keep it behind the "Resumo e exercícios" menu.
+    const directButton = findArtifactButton(['transcrição']);
+    if (directButton) {
+      directButton.click();
+    } else {
+      const summaryButton = await waitFor(findSummaryButton, 8_000, 'Não encontrei a opção de transcrição nesta aula.');
+      summaryButton.click();
+      const menuItem = await waitFor(findTranscriptMenuItem, 8_000, 'Não encontrei a opção de transcrição nesta aula.');
+      menuItem.click();
+    }
 
-    summaryButton.click();
-    const menuItem = await waitFor(findTranscriptMenuItem);
-    menuItem.click();
-
-    await waitFor(getTranscriptDialog, 12_000);
-    dialog = await waitFor(getReadyTranscriptDialog, 30_000);
+    dialog = await waitFor(getReadyTranscriptDialog, 30_000, 'A transcrição demorou para carregar. Tente novamente.');
     const text = transcriptToText(dialog, lessonTitle);
 
     if (text.length < 80) throw new Error('A transcrição retornou vazia.');
@@ -394,7 +398,9 @@ function findArtifactButton(names) {
 
 function getArtifactPanel(names) {
   const normalizedNames = names.map((name) => normalize(name).toLowerCase());
-  return [...document.querySelectorAll('section, [role="dialog"], dialog')].find((panel) => {
+  return [...document.querySelectorAll(
+    'section, [role="dialog"], dialog, .drawer-artifacts-drawer, .mindmap-overlay',
+  )].find((panel) => {
     const title = normalize(panel.querySelector('#player-overlay-title, h1, h2, h3')?.textContent).toLowerCase();
     return normalizedNames.some((name) => title.includes(name));
   });
@@ -440,9 +446,22 @@ async function extractMindMaps() {
       'O mapa mental demorou para abrir. Tente novamente.',
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-    return [...panel.querySelectorAll('img')]
+    const imageUrls = [...panel.querySelectorAll('img')]
       .map((image) => image.currentSrc || image.src)
       .filter((source) => /^https?:\/\//.test(source));
+    if (imageUrls.length) return imageUrls;
+
+    // The current player renders an interactive Markmap SVG rather than an
+    // <img>. Preserve that complete vector map as an image data URL so it can
+    // become the normal "Mapas mentais" child page in StudyFlash.
+    const maps = [...panel.querySelectorAll('svg.markmap')].map((svg) => {
+      const copy = svg.cloneNode(true);
+      copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      const markup = new XMLSerializer().serializeToString(copy);
+      return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
+    });
+    if (!maps.length) throw new Error('O mapa mental abriu, mas não continha uma imagem ou mapa vetorial legível.');
+    return maps;
   } finally {
     await closeArtifactOverlay(getArtifactPanel(names));
   }
