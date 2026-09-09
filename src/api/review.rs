@@ -608,9 +608,9 @@ async fn import_lesson_handler(
     material_links.push((name, material_page.view_id));
   }
 
-  // A child in the sidebar alone is easy to miss. Insert native page mentions
-  // into the lesson as well, matching AppFlowy's normal “page inside page”
-  // experience: each visible material name opens its corresponding child.
+  // A child in the sidebar alone is easy to miss. Insert AppFlowy's native
+  // `sub_page` document blocks into the lesson as well. These are the same
+  // blocks created through `/document`, rather than inline page mentions.
   if !material_links.is_empty() {
     let blocks = lesson_material_link_blocks(&material_links);
     append_block_at_the_end_of_page(
@@ -848,18 +848,13 @@ fn lesson_material_link_blocks(materials: &[(String, Uuid)]) -> Vec<SerdeBlock> 
     ]),
     children: Vec::new(),
   });
-  for (name, view_id) in materials {
+  for (_, view_id) in materials {
     blocks.push(SerdeBlock {
-      ty: "paragraph".to_string(),
-      data: HashMap::from([(
-        "delta".to_string(),
-        serde_json::json!([{
-          "insert": name,
-          "attributes": {
-            "mention": { "type": "childPage", "page_id": view_id.to_string() }
-          }
-        }]),
-      )]),
+      ty: "sub_page".to_string(),
+      // The child page's name and icon are resolved by the native SubPage
+      // renderer. Supplying only view_id intentionally matches the block that
+      // AppFlowy creates from the slash-menu “Documento” action.
+      data: HashMap::from([("view_id".to_string(), serde_json::json!(view_id.to_string()))]),
       children: Vec::new(),
     });
   }
@@ -1931,7 +1926,7 @@ async fn maybe_award_completion(
 mod tests {
   use super::{
     CreateCardRequest, LessonImportRequest, calculate_interval, calculate_review_xp,
-    lesson_material_pages, lesson_page_data, numbered_list_item, push_document_rich_text,
+    lesson_material_link_blocks, lesson_material_pages, lesson_page_data, numbered_list_item, push_document_rich_text,
     push_document_text,
   };
   use serde_json::json;
@@ -1994,6 +1989,16 @@ mod tests {
     assert_eq!(children[0]["type"], "heading");
     assert_eq!(children[1]["data"]["delta"][0]["attributes"]["bold"], true);
     assert_eq!(children[2]["type"], "callout");
+  }
+
+  #[test]
+  fn material_links_use_native_subpage_document_blocks() {
+    let first = Uuid::new_v4();
+    let blocks = lesson_material_link_blocks(&[("Transcrição — Aula".to_string(), first)]);
+    assert_eq!(blocks[0].ty, "heading");
+    assert_eq!(blocks[1].ty, "sub_page");
+    assert_eq!(blocks[1].data["view_id"], first.to_string());
+    assert!(blocks[1].data.get("delta").is_none());
   }
 
   #[test]
