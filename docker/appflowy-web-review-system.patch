@@ -2743,10 +2743,9 @@ index d5d98b9..4361fc7 100644
 +      return '\n';
 +    }
 +
-    return node.children.map((child) => extractTextFromHAST(child as HastElement | HastText)).join('');
-  }
+     return node.children.map((child) => extractTextFromHAST(child as HastElement | HastText)).join('');
+   }
  
-  }
  
 diff --git a/src/components/editor/components/blocks/image/ImageRender.tsx b/src/components/editor/components/blocks/image/ImageRender.tsx
 index 8f48eb8..4ba8084 100644

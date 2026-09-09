@@ -1,6 +1,6 @@
 use crate::api::util::realtime_user_for_web_request;
-use crate::biz::workspace::page_view::create_page;
-use actix_web::{HttpRequest, Scope, web};
+use crate::biz::workspace::page_view::{append_block_at_the_end_of_page, create_page};
+use actix_web::{web, HttpRequest, Scope};
 use app_error::AppError;
 use chrono::{DateTime, Days, Duration, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,9 @@ use serde_json::Value;
 use shared_entity::dto::workspace_dto::ViewLayout;
 use shared_entity::response::{AppResponse, JsonAppResponse};
 use sqlx::{PgPool, Postgres, Row, Transaction};
+use std::collections::HashMap;
 use uuid::Uuid;
+use workspace_template::document::parser::SerdeBlock;
 
 use crate::{biz::authentication::jwt::UserUuid, state::AppState};
 
@@ -588,8 +590,9 @@ async fn import_lesson_handler(
   // not become copied text here; they are represented by their native Review
   // card formats below.
   let mut material_pages = 0;
+  let mut material_links = Vec::new();
   for (name, data) in lesson_material_pages(&request) {
-    create_page(
+    let material_page = create_page(
       &state,
       user.clone(),
       workspace_id,
@@ -602,6 +605,22 @@ async fn import_lesson_handler(
     )
     .await?;
     material_pages += 1;
+    material_links.push((name, material_page.view_id));
+  }
+
+  // A child in the sidebar alone is easy to miss. Insert native page mentions
+  // into the lesson as well, matching AppFlowy's normal “page inside page”
+  // experience: each visible material name opens its corresponding child.
+  if !material_links.is_empty() {
+    let blocks = lesson_material_link_blocks(&material_links);
+    append_block_at_the_end_of_page(
+      &state,
+      user.clone(),
+      workspace_id,
+      &page.view_id.to_string(),
+      &blocks,
+    )
+    .await?;
   }
 
   // The document now exists. Tie every imported card to it so Review can open
@@ -814,6 +833,37 @@ fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(String, Value)> 
     ));
   }
   pages
+}
+
+fn lesson_material_link_blocks(materials: &[(String, Uuid)]) -> Vec<SerdeBlock> {
+  let mut blocks = Vec::with_capacity(materials.len() + 1);
+  blocks.push(SerdeBlock {
+    ty: "heading".to_string(),
+    data: HashMap::from([
+      ("level".to_string(), serde_json::json!(2)),
+      (
+        "delta".to_string(),
+        serde_json::json!([{ "insert": "Materiais desta aula" }]),
+      ),
+    ]),
+    children: Vec::new(),
+  });
+  for (name, view_id) in materials {
+    blocks.push(SerdeBlock {
+      ty: "paragraph".to_string(),
+      data: HashMap::from([(
+        "delta".to_string(),
+        serde_json::json!([{
+          "insert": name,
+          "attributes": {
+            "mention": { "type": "childPage", "page_id": view_id.to_string() }
+          }
+        }]),
+      )]),
+      children: Vec::new(),
+    });
+  }
+  blocks
 }
 
 fn review_scope_page_data(card_count: usize) -> Value {
