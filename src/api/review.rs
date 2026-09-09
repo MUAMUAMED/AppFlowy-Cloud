@@ -824,7 +824,11 @@ fn lesson_material_pages(request: &LessonImportRequest) -> Vec<(String, Value)> 
     for map in &request.mind_maps {
       children.push(serde_json::json!({
         "type": "image",
-        "data": { "url": map, "align": "center", "image_type": 1 }
+        // Mind maps arrive either as a Gran HTTPS URL or as a serialized SVG
+        // data URL. Neither is an AppFlowy-internal upload (type 1); marking
+        // it external preserves the URL in the editor and lets the web client
+        // render it directly.
+        "data": { "url": map, "align": "center", "image_type": 2 }
       }));
     }
     pages.push((
@@ -2052,6 +2056,11 @@ mod tests {
     assert_eq!(materials[3].0, "Transcrição — Morfologia III");
     assert_eq!(materials[4].0, "Mapa mental — Morfologia III");
     assert_eq!(materials[4].1["children"][0]["type"], "image");
+    assert_eq!(materials[4].1["children"][0]["data"]["image_type"], 2);
+    assert_eq!(
+      materials[4].1["children"][0]["data"]["url"],
+      "https://cdn.example.com/mapa.png"
+    );
 
     let lesson = lesson_page_data(&request);
     let lesson_text = lesson["children"].to_string();
