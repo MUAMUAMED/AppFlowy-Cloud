@@ -322,9 +322,16 @@ async function extractFixationSet() {
 }
 
 function getFlashcardsPanel() {
-  return [...document.querySelectorAll('section')].find((section) =>
-    normalize(section.querySelector('[id="player-overlay-title"]')?.textContent) === 'Flashcards',
+  // Gran has shipped this player both as a <section> and as a dialog-like
+  // overlay. Resolve it from its visible title instead of relying on a single
+  // wrapper tag, otherwise the importer sees the button but never sees the
+  // player that it just opened.
+  const title = [...document.querySelectorAll('#player-overlay-title, h1, h2, h3')].find((element) =>
+    normalize(element.textContent) === 'Flashcards',
   );
+  return title?.closest('section, [role="dialog"], dialog, [class*="overlay"], [class*="Overlay"]')
+    || title?.parentElement
+    || null;
 }
 
 async function closeArtifactOverlay(panel) {
@@ -349,15 +356,27 @@ async function ensureFlashcardsPanel() {
     panel = await waitFor(getFlashcardsPanel, 12_000);
   }
 
-  const tutorialCard = panel.querySelector('div[role="button"][aria-pressed]');
+  const tutorialCard = panel.querySelector('div[role="button"][aria-pressed]')
+    || panel.querySelector('[role="button"][aria-pressed]')
+    || panel.querySelector('[role="button"]');
   const startButton = [...panel.querySelectorAll('button')].find((button) =>
     normalize(button.textContent) === 'Entendi, vamos começar!',
   );
-  if (tutorialCard && startButton) {
-    tutorialCard.click();
+  if (startButton) {
+    // The introductory player changed from a div with aria-pressed to a
+    // generic role=button in newer Gran lessons. Select it when present, but
+    // do not require its former markup in order to start the deck.
+    tutorialCard?.click();
     await new Promise((resolve) => setTimeout(resolve, 120));
     startButton.click();
-    await waitFor(() => panel.querySelector('div[role="button"][aria-pressed]')?.querySelectorAll('.backface-hidden').length >= 2 ? panel : null, 5_000);
+    await waitFor(() => {
+      try {
+        getFlashcardProgress(panel);
+        return panel;
+      } catch {
+        return null;
+      }
+    }, 5_000, 'O player de flashcards não iniciou após a tela de introdução.');
   }
   return panel;
 }
@@ -367,8 +386,9 @@ function getFlashcardProgress(panel) {
   // Gran uses both "1 / 10 cartões" and "Cartão 1 de 10" depending on
   // the lesson/player version.  Prefer an explicit card label, then fall
   // back to the only position/total pair displayed inside the player.
-  const match = text.match(/(?:flashcards?|cart(?:ão|ões))\s*(\d+)\s*(?:\/|de)\s*(\d+)/i)
-    || text.match(/(\d+)\s*(?:\/|de)\s*(\d+)\s*(?:flashcards?|cart(?:ão|ões))?/i)
+  const labelled = text.match(/(?:flashcards?|cart(?:ão|ões))\s*(\d+)\s*(?:\/|de)\s*(\d+)/i)
+    || text.match(/(\d+)\s*(?:\/|de)\s*(\d+)\s*(?:flashcards?|cart(?:ão|ões))/i);
+  const match = labelled
     // Some Gran player versions display a bare “1 / 15” in the card panel.
     // It is still unambiguous here because this function only runs inside the
     // Flashcards overlay (never the video player or exercise dialog).
@@ -382,7 +402,8 @@ function getFlashcardProgress(panel) {
 }
 
 function getFlashcard(panel) {
-  const card = panel.querySelector('div[role="button"][aria-pressed]');
+  const card = panel.querySelector('div[role="button"][aria-pressed]')
+    || panel.querySelector('[role="button"][aria-pressed]');
   const faces = card ? [...card.querySelectorAll('.backface-hidden')] : [];
   const front = normalize(faces[0]?.querySelector('p')?.textContent);
   const back = normalize(faces[1]?.querySelector('p')?.textContent);
