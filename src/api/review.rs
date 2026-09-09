@@ -854,7 +854,10 @@ fn lesson_material_link_blocks(materials: &[(String, Uuid)]) -> Vec<SerdeBlock> 
       // The child page's name and icon are resolved by the native SubPage
       // renderer. Supplying only view_id intentionally matches the block that
       // AppFlowy creates from the slash-menu “Documento” action.
-      data: HashMap::from([("view_id".to_string(), serde_json::json!(view_id.to_string()))]),
+      data: HashMap::from([(
+        "view_id".to_string(),
+        serde_json::json!(view_id.to_string()),
+      )]),
       children: Vec::new(),
     });
   }
@@ -1925,9 +1928,9 @@ async fn maybe_award_completion(
 #[cfg(test)]
 mod tests {
   use super::{
-    CreateCardRequest, LessonImportRequest, calculate_interval, calculate_review_xp,
-    lesson_material_link_blocks, lesson_material_pages, lesson_page_data, numbered_list_item, push_document_rich_text,
-    push_document_text,
+    calculate_interval, calculate_review_xp, lesson_material_link_blocks, lesson_material_pages,
+    lesson_page_data, numbered_list_item, push_document_rich_text, push_document_text,
+    CreateCardRequest, LessonImportRequest,
   };
   use serde_json::json;
   use uuid::Uuid;
