@@ -368,9 +368,17 @@ function getFlashcardProgress(panel) {
   // the lesson/player version.  Prefer an explicit card label, then fall
   // back to the only position/total pair displayed inside the player.
   const match = text.match(/(?:flashcards?|cart(?:ão|ões))\s*(\d+)\s*(?:\/|de)\s*(\d+)/i)
-    || text.match(/(\d+)\s*(?:\/|de)\s*(\d+)\s*(?:flashcards?|cart(?:ão|ões))?/i);
+    || text.match(/(\d+)\s*(?:\/|de)\s*(\d+)\s*(?:flashcards?|cart(?:ão|ões))?/i)
+    // Some Gran player versions display a bare “1 / 15” in the card panel.
+    // It is still unambiguous here because this function only runs inside the
+    // Flashcards overlay (never the video player or exercise dialog).
+    || [...text.matchAll(/\b(\d+)\s*(?:\/|de)\s*(\d+)\b/gi)]
+      .map((candidate) => ({ current: Number(candidate[1]), total: Number(candidate[2]) }))
+      .find((candidate) => candidate.current >= 1 && candidate.current <= candidate.total && candidate.total >= 2 && candidate.total <= 100);
   if (!match) throw new Error('Não encontrei o contador dos flashcards.');
-  return { current: Number(match[1]), total: Number(match[2]) };
+  return 'current' in match
+    ? match
+    : { current: Number(match[1]), total: Number(match[2]) };
 }
 
 function getFlashcard(panel) {
@@ -590,7 +598,7 @@ async function collectLessonPackage() {
   };
 
   const transcript = await optional('Transcrição', extractTranscript, { transcript: '' });
-  const summary = await optional('Resumo', () => extractTextArtifact(['resumo da aula', 'resumo de aula']), '');
+  const summary = await optional('Resumo', () => extractTextArtifact(['resumo da aula', 'resumo de aula', 'resumo']), '');
   const pocketReview = await optional('Revisão de bolso', () => extractTextArtifact(['revisão de bolso', 'resumo de bolso']), '');
   const flashcards = await optional('Flashcards', extractFlashcards, { cards: [] });
   const questions = await optional('Exercícios de fixação', answerAndExtractFixationWithExplanations, { questions: [] });
