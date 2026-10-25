@@ -25,6 +25,13 @@ navegador encerra; a extensão não lê nem armazena a senha ou o token de renov
 
 ## Desenvolvimento
 
+Versão 0.4.0: aguarda o conteúdo dos materiais estabilizar, ignora painéis
+ocultos e imagens de erro, preserva todos os parágrafos dos flashcards e aceita
+navegação por rótulos acessíveis. Importações incompletas mostram o motivo de
+cada falha, em vez de informar que todos os materiais estavam indisponíveis.
+
+Para os testes de regressão: `npm install` e `npm test` nesta pasta.
+
 Além da transferência completa, os botões de exportação individual continuam
 gerando arquivos TXT locais para conferência.
 

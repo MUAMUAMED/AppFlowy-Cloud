@@ -190,7 +190,7 @@ async function sendToStudyFlash() {
     const skipped = result.package.skipped_materials || [];
     const materialPages = response.material_pages || 0;
     if (skipped.length) {
-      setStatus(`Importação concluída dentro de “${destinationName}”. A aula possui ${materialPages} página(s) filha(s); ${response.imported_cards} cartão(ões) foram adicionados à Revisão; ${skipped.length} material(is) não estavam disponíveis. A aula foi aberta em uma nova aba.`);
+      setStatus(`Importação parcial dentro de “${destinationName}”: ${materialPages} página(s) e ${response.imported_cards} cartão(ões). Não coletados: ${skipped.join(' | ')}. A aula foi aberta em uma nova aba.`, true);
     } else {
       setStatus(`Importação concluída dentro de “${destinationName}”. A nova aula possui ${materialPages} página(s) filha(s) e ${response.imported_cards} cartão(ões) no formato nativo da Revisão. A aula foi aberta em uma nova aba.`);
     }

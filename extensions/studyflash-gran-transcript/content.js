@@ -2,6 +2,34 @@
 // that short interval textContent/innerText can be null (not just undefined),
 // so always coerce before normalising it.
 const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+const artifactKey = (value) => normalize(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function isVisible(element) {
+  if (!element?.isConnected) return false;
+  for (let node = element; node?.nodeType === 1; node = node.parentElement) {
+    if (node.hidden || node.getAttribute('aria-hidden') === 'true') return false;
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(node) : node.style;
+    if (style?.display === 'none' || style?.visibility === 'hidden') return false;
+  }
+  return true;
+}
+
+// Poll as well as observing the DOM: image decoding, CSS visibility, and
+// carousel state changes do not necessarily add/remove text nodes.
+async function waitForStableArtifact(read, timeout = 30_000, stableMs = 800) {
+  const deadline = Date.now() + timeout;
+  let last = '';
+  let stableSince = Date.now();
+  while (Date.now() < deadline) {
+    const value = read();
+    const signature = value ? JSON.stringify(value) : '';
+    if (!signature || signature !== last) stableSince = Date.now();
+    if (signature && signature === last && Date.now() - stableSince >= stableMs) return value;
+    last = signature;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error('O material não carregou conteúdo completo. Nenhuma página vazia será enviada.');
+}
 
 function findSummaryButton() {
   const explicitButton = document.querySelector('button[aria-label="Resumo e exercícios"]');
@@ -21,26 +49,18 @@ function findTranscriptMenuItem() {
   });
 }
 
-function waitFor(getElement, timeout = 8_000, timeoutMessage = 'O conteúdo demorou para abrir. Tente novamente.') {
-  return new Promise((resolve, reject) => {
-    const immediately = getElement();
-    if (immediately) return resolve(immediately);
-
-    const observer = new MutationObserver(() => {
+async function waitFor(getElement, timeout = 8_000, timeoutMessage = 'O conteúdo demorou para abrir. Tente novamente.') {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    // React briefly removes the old counter/card before rendering the next.
+    // A transient missing counter must not abort the whole collection.
+    try {
       const element = getElement();
-      if (!element) return;
-      clearTimeout(timer);
-      observer.disconnect();
-      resolve(element);
-    });
-
-    const timer = setTimeout(() => {
-      observer.disconnect();
-      reject(new Error(timeoutMessage));
-    }, timeout);
-
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  });
+      if (element) return element;
+    } catch { /* The view is still changing. */ }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(timeoutMessage);
 }
 
 function getTranscriptDialog() {
@@ -108,6 +128,7 @@ function transcriptToText(dialog, lessonTitle) {
 function inlineMarkdown(node) {
   const visit = (current) => {
     if (current.nodeType === Node.TEXT_NODE) return current.nodeValue || '';
+    if (current.tagName?.toUpperCase() === 'BR') return '\n';
     const text = [...current.childNodes].map(visit).join('');
     const tag = current.tagName?.toUpperCase();
     return ['STRONG', 'B'].includes(tag) ? `**${text}**` : text;
@@ -326,18 +347,13 @@ function getFlashcardsPanel() {
   // overlay. Resolve it from its visible title instead of relying on a single
   // wrapper tag, otherwise the importer sees the button but never sees the
   // player that it just opened.
-  const title = [...document.querySelectorAll('#player-overlay-title, h1, h2, h3')].find((element) =>
-    normalize(element.textContent) === 'Flashcards',
-  );
-  return title?.closest('section, [role="dialog"], dialog, [class*="overlay"], [class*="Overlay"]')
-    || title?.parentElement
-    || null;
+  return getArtifactPanel(['flashcards']);
 }
 
 async function closeArtifactOverlay(panel) {
   const closeButton = [...(panel?.querySelectorAll('button') || [])].find((button) => {
     const label = normalize(`${button.getAttribute('aria-label') || ''} ${button.innerText || button.textContent || ''}`);
-    return /^(fechar|voltar para a aula)$/i.test(label);
+    return isVisible(button) && (/^(fechar|close)\b/i.test(label) || /^voltar para (?:a )?aula$/i.test(label));
   });
   if (!closeButton) return;
   closeButton.click();
@@ -350,10 +366,10 @@ async function closeArtifactOverlay(panel) {
 async function ensureFlashcardsPanel() {
   let panel = getFlashcardsPanel();
   if (!panel) {
-    const artifactButton = document.querySelector('button[aria-label="Selecionar o artefato de Flashcards"]');
+    const artifactButton = findArtifactButton(['flashcards']);
     if (!artifactButton) throw new Error('Não encontrei Flashcards nesta aula.');
     artifactButton.click();
-    panel = await waitFor(getFlashcardsPanel, 12_000);
+    panel = await waitFor(getFlashcardsPanel, 20_000);
   }
 
   const tutorialCard = panel.querySelector('div[role="button"][aria-pressed]')
@@ -378,6 +394,10 @@ async function ensureFlashcardsPanel() {
       }
     }, 5_000, 'O player de flashcards não iniciou após a tela de introdução.');
   }
+  await waitFor(() => {
+    panel = getFlashcardsPanel() || panel;
+    return getFlashcardProgress(panel) ? panel : null;
+  }, 20_000, 'Os flashcards abriram, mas o contador não carregou.');
   return panel;
 }
 
@@ -404,9 +424,11 @@ function getFlashcardProgress(panel) {
 function getFlashcard(panel) {
   const card = panel.querySelector('div[role="button"][aria-pressed]')
     || panel.querySelector('[role="button"][aria-pressed]');
-  const faces = card ? [...card.querySelectorAll('.backface-hidden')] : [];
-  const front = normalize(faces[0]?.querySelector('p')?.textContent);
-  const back = normalize(faces[1]?.querySelector('p')?.textContent);
+  const faces = [...(card || panel).querySelectorAll('.backface-hidden, [class*="backface-visibility"], [data-side]')];
+  const frontElement = panel.querySelector('[data-side="front"], [data-testid="flashcard-front"]') || faces[0];
+  const backElement = panel.querySelector('[data-side="back"], [data-testid="flashcard-back"]') || faces[1];
+  const front = normalize(frontElement?.innerText || frontElement?.textContent);
+  const back = normalize(backElement?.innerText || backElement?.textContent);
   if (!front || !back) throw new Error('Não consegui ler a frente e o verso deste flashcard.');
   return { ...getFlashcardProgress(panel), front, back };
 }
@@ -418,16 +440,23 @@ async function extractFlashcards() {
     const initial = getFlashcardProgress(panel);
     const cards = [];
     for (let position = initial.current; position > 1; position -= 1) {
-      const previous = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-left"]') && !button.disabled);
+      const previous = flashcardNavigation(panel, 'previous');
       if (!previous) throw new Error(`Não consegui voltar ao flashcard ${position - 1}.`);
       previous.click();
       await waitFor(() => getFlashcardProgress(panel).current === position - 1 ? panel : null);
     }
     const total = getFlashcardProgress(panel).total;
     for (let position = 1; position <= total; position += 1) {
-      cards.push(getFlashcard(panel));
+      const currentCard = await waitForStableArtifact(() => {
+        panel = getFlashcardsPanel() || panel;
+        try {
+          const value = getFlashcard(panel);
+          return value.current === position ? value : null;
+        } catch { return null; }
+      }, 15_000, 400);
+      cards.push(currentCard);
       if (position === total) break;
-      const next = [...panel.querySelectorAll('button')].find((button) => button.querySelector('[data-icon="chevron-right"]') && !button.disabled);
+      const next = flashcardNavigation(panel, 'next');
       if (!next) throw new Error(`Não consegui avançar do flashcard ${position}.`);
       next.click();
       await waitFor(() => getFlashcardProgress(panel).current === position + 1 ? panel : null);
@@ -442,34 +471,53 @@ async function extractFlashcards() {
   }
 }
 
+function flashcardNavigation(panel, direction) {
+  const previous = direction === 'previous';
+  return [...panel.querySelectorAll('button')].find((button) => {
+    if (!isVisible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+    const label = artifactKey(`${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.textContent || ''}`);
+    return (previous ? /anterior|voltar|previous/ : /proximo|seguinte|next/).test(label)
+      || Boolean(button.querySelector(`[data-icon="chevron-${previous ? 'left' : 'right'}"], .lucide-chevron-${previous ? 'left' : 'right'}`));
+  });
+}
+
 function findArtifactButton(names) {
-  const normalizedNames = names.map((name) => normalize(name).toLowerCase());
-  return [...document.querySelectorAll('button')].find((button) => {
-    const text = normalize(`${button.getAttribute('aria-label') || ''} ${button.innerText || ''}`).toLowerCase();
+  const normalizedNames = names.map(artifactKey);
+  return [...document.querySelectorAll('button, [role="button"]')].find((button) => {
+    if (!isVisible(button) || button.disabled) return false;
+    const text = artifactKey(`${button.getAttribute('aria-label') || ''} ${button.getAttribute('title') || ''} ${button.innerText || button.textContent || ''}`);
+    if (normalizedNames.includes('resumo') && /resumo e exercicios|resumo de bolso/.test(text)) return false;
     return normalizedNames.some((name) => text.includes(name));
   });
 }
 
 function getArtifactPanel(names) {
-  const normalizedNames = names.map((name) => normalize(name).toLowerCase());
-  return [...document.querySelectorAll(
-    'section, [role="dialog"], dialog, .drawer-artifacts-drawer, .mindmap-overlay',
-  )].find((panel) => {
-    const title = normalize(panel.querySelector('#player-overlay-title, h1, h2, h3')?.textContent).toLowerCase();
-    return normalizedNames.some((name) => title.includes(name));
-  });
+  const normalizedNames = names.map(artifactKey);
+  const titles = [...document.querySelectorAll('#player-overlay-title, h1, h2, h3, [role="heading"]')];
+  for (const title of titles) {
+    if (!isVisible(title)) continue;
+    const text = artifactKey(title.textContent);
+    if (!normalizedNames.some((name) => text === name || text.startsWith(`${name} -`) || text.startsWith(`${name} —`))) continue;
+    const panel = title.closest('[role="dialog"], dialog, .drawer-artifacts-drawer, .mindmap-overlay, section, [class*="overlay"], [class*="Overlay"]');
+    if (panel && isVisible(panel)) return panel;
+  }
+  return null;
 }
 
 function artifactPanelText(panel) {
   const ignored = /^(fechar|voltar para a aula|próximo|anterior|entendi, vamos começar!)$/i;
-  const chunks = [...panel.querySelectorAll('h1, h2, h3, h4, p, li')]
+  const chunks = [...panel.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li')]
+    .filter((element) => !element.closest('button, [aria-busy="true"], [hidden], [aria-hidden="true"]')
+      && !(element.tagName === 'P' && element.closest('li'))
+      && element.id !== 'player-overlay-title' && isVisible(element))
     .map((element) => {
       const text = normalize(element.innerText || element.textContent);
-      if (/^H[1-4]$/.test(element.tagName)) return `${'#'.repeat(Number(element.tagName.slice(1)) + 1)} ${inlineMarkdown(element)}`;
+      if (/^H[1-6]$/.test(element.tagName)) return `${'#'.repeat(Math.min(6, Number(element.tagName.slice(1)) + 1))} ${inlineMarkdown(element)}`;
       return element.tagName === 'LI' ? `- ${inlineMarkdown(element)}` : inlineMarkdown(element);
     })
     .filter((text) => text && !ignored.test(text));
-  return [...new Set(chunks)].join('\n\n').trim();
+  // Repeated list items may be meaningful; do not globally deduplicate them.
+  return chunks.join('\n\n').trim();
 }
 
 async function extractTextArtifact(names) {
@@ -477,13 +525,22 @@ async function extractTextArtifact(names) {
   if (!button) throw new Error('não disponível nesta aula');
   button.click();
   try {
-    const panel = await waitFor(
+    await waitFor(
       () => getArtifactPanel(names),
       8_000,
       `O material “${names[0]}” demorou para abrir. Tente novamente.`,
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    return artifactPanelText(panel);
+    return await waitForStableArtifact(() => {
+      const currentPanel = getArtifactPanel(names);
+      if (!currentPanel || currentPanel.querySelector('[aria-busy="true"]')) return null;
+      const text = artifactPanelText(currentPanel);
+      const body = text.split('\n').filter((line) => !line.startsWith('#')).join(' ').trim();
+      if (/^(?:nao foi possivel|ocorreu um erro|conteudo indisponivel|material indisponivel)/.test(artifactKey(body))) {
+        throw new Error(`O Gran exibiu uma falha ao carregar ${names[0]}.`);
+      }
+      if (/carregando|gerando (?:resumo|revisao)|aguarde/i.test(body) || body.length < 40) return null;
+      return text;
+    });
   } finally {
     await closeArtifactOverlay(getArtifactPanel(names));
   }
@@ -495,16 +552,19 @@ async function extractMindMaps() {
   if (!button) throw new Error('não disponível nesta aula');
   button.click();
   try {
-    const panel = await waitFor(
+    let panel = await waitFor(
       () => getArtifactPanel(names),
       8_000,
       'O mapa mental demorou para abrir. Tente novamente.',
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const imageUrls = [...panel.querySelectorAll('img')]
-      .map((image) => image.currentSrc || image.src)
-      .filter((source) => /^https?:\/\//.test(source));
-    if (imageUrls.length) return imageUrls;
+    // Wait for actual map content, not its drawer shell or an error graphic.
+    await waitForStableArtifact(() => {
+      const current = getArtifactPanel(names);
+      const svg = current?.querySelector('svg.markmap');
+      if (svg?.querySelector('g.markmap-node') && normalize(svg.textContent)) return svg.outerHTML;
+      return getMindMapImages(current).join('\n') || null;
+    });
+    panel = getArtifactPanel(names) || panel;
 
     // Gran uses Markmap. Its initial view renders only root branches; open all
     // nodes before serialising so StudyFlash receives the complete structure.
@@ -538,11 +598,23 @@ async function extractMindMaps() {
       const markup = new XMLSerializer().serializeToString(copy);
       return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
     });
-    if (!maps.length) throw new Error('O mapa mental abriu, mas não continha uma imagem ou mapa vetorial legível.');
-    return maps;
+    if (maps.length) return maps;
+    const images = getMindMapImages(panel);
+    if (!images.length) throw new Error('O mapa mental abriu, mas não continha uma imagem ou mapa vetorial legível.');
+    return images;
   } finally {
     await closeArtifactOverlay(getArtifactPanel(names));
   }
+}
+
+function getMindMapImages(panel) {
+  if (!panel) return [];
+  return [...panel.querySelectorAll('img')].filter((image) => {
+    const description = artifactKey(`${image.alt || ''} ${image.currentSrc || image.src || ''}`);
+    if (/error|erro|empty|placeholder|not.found|nao.encontrad|illustration|ilustracao|loading|spinner|logo|icon/.test(description)) return false;
+    return /mapa|mind.?map/.test(description) && image.complete !== false
+      && (image.naturalWidth || Number(image.getAttribute('width')) || 0) > 200;
+  }).map((image) => image.currentSrc || image.src).filter((source) => /^https?:\/\//.test(source));
 }
 
 function lessonMetadata() {

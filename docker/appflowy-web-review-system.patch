@@ -2770,6 +2770,23 @@ index 8f48eb8..4ba8084 100644
    return (
      <div
        style={{
+diff --git a/src/components/editor/components/blocks/image/ImageBlock.tsx b/src/components/editor/components/blocks/image/ImageBlock.tsx
+--- a/src/components/editor/components/blocks/image/ImageBlock.tsx
++++ b/src/components/editor/components/blocks/image/ImageBlock.tsx
+@@ -34,7 +34,12 @@
+     const readOnly = useReadOnly() || editor.isElementReadOnly(node as unknown as Element);
+     const selected = useSelected();
+     const { url: dataUrl, align } = useMemo(() => data || {}, [data]);
+-    const url = useMemo(() => constructFileUrl(dataUrl, workspaceId, viewId), [dataUrl, workspaceId, viewId]);
++    const url = useMemo(
++      () => dataUrl?.startsWith('data:image/svg+xml')
++        ? dataUrl
++        : constructFileUrl(dataUrl, workspaceId, viewId),
++      [dataUrl, workspaceId, viewId]
++    );
+ 
+     const containerRef = useRef<HTMLDivElement>(null);
+     const onFocusNode = useCallback(() => {
 diff --git a/src/components/editor/components/blocks/image/InteractiveMindMap.tsx b/src/components/editor/components/blocks/image/InteractiveMindMap.tsx
 new file mode 100644
 index 0000000..c876302
